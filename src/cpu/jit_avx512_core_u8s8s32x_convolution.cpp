@@ -351,6 +351,9 @@ int jit_avx512_core_u8s8s32x_conv_fwd_ker_t::get_src_index(int ow_i) {
 
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute(
                                Zmm vreg_acc, Zmm vreg_wei, Zmm vreg_src) {
+#ifdef ENABLE_VNNI
+        vpdpbusd(vreg_acc, vreg_src, vreg_wei);
+#else
         Zmm vreg_t_s16 = vreg_tmp;
         Zmm vreg_t_s32 = vreg_tmp;
 
@@ -361,8 +364,8 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute(
         // [1o, 1o, ..., 1o] (16) <-- o + u
         vpaddd(vreg_acc, vreg_acc, vreg_t_s32);
 
+#endif
 }
-
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t
     ::compute_part_ur_ow_oc_block_expl_bcast_large_spatial(
         int ur_ow, int iw_start) {
