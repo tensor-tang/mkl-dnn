@@ -126,15 +126,8 @@ struct test_convolution_sizes_t {
     int dilh, dilw;
 };
 
-void test_conv(bool with_fuse = true, bool enable_vnni = false) {
+void test_conv(bool with_fuse = true) {
     auto eng = engine(engine::cpu, 0);
-    if (enable_vnni) {
-    #ifndef ENABLE_VNNI
-        printf("warning: VNNI is disabled on cmake, use -DENABLE_VNNI=ON\n");
-    #endif
-    } else {
-    #undef ENABLE_VNNI
-    }
 
     // conv desc
     test_convolution_sizes_t cd(
@@ -281,20 +274,20 @@ void test_conv(bool with_fuse = true, bool enable_vnni = false) {
       std::cout << "No Fused ";
     }
 
-    if (enable_vnni) {
-      std::cout << "with VNNI ";
-    } else {
-      std::cout << "without VNNI ";
-    }
+#ifdef ENABLE_VNNI
+    std::cout << "with VNNI ";
+#else
+    std::cout << "without VNNI ";
+#endif
 
     std::cout << "conv relu avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
     
 }
 
-// usage ./test_fuse with_fuse enable_vnni buring_iter valid_iter
+// usage ./test_fuse with_fuse buring_iter valid_iter
 int main(int argc, char **argv) {
     std::cout << argv[0] << std::endl;
-    bool with_fuse = true, enable_vnni = false;
+    bool with_fuse = true;
     if (argc >= 2) {
       std::string in(argv[1]);
       assert(in == "0" || in == "1");
@@ -302,21 +295,16 @@ int main(int argc, char **argv) {
     }
     if (argc >= 3) {
       std::string in(argv[2]);
-      assert(in == "0" || in == "1");
-      enable_vnni = static_cast<bool>(std::stoi(in));
+      burning_iter = std::stoi(in);
+      assert(burning_iter > 0 && burning_iter <= 5000);
     }
     if (argc >= 4) {
       std::string in(argv[3]);
-      burning_iter = std::stoi(in);
-      assert(burning_iter > 0 && burning_iter <= 1000);
-    }
-    if (argc >= 5) {
-      std::string in(argv[4]);
       iter = std::stoi(in);
-      assert(iter > 0 && iter <= 1000);
+      assert(iter > 0 && iter <= 5000);
     }
     try {
-        test_conv(with_fuse, enable_vnni);
+        test_conv(with_fuse);
         // test_reorder();
     }
     catch(error& e) {
