@@ -662,8 +662,8 @@ status_t jit_avx512_core_u8s8s32x_conv_fwd_ker_t::init_conf(jit_conv_conf_t &c,
     c.oc_block = 16;
 
     const bool args_ok = true
-        && c.ic % c.ic_block == 0
-        && c.oc % c.oc_block == 0
+        && c.ic % c.ic_block == 0  // ic should be 4x
+        && c.oc % c.oc_block == 0  // oc should be 16x
         && c.dilate_h == 0
         && c.dilate_w == 0
         && everyone_is(nhwc, src_d.format(), dst_d.format())
@@ -794,9 +794,9 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t(const pd_t *pd,
             *conf_.attr());
 
     const int nthreads = omp_get_max_threads();
-    ws_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc_block;
+    ws_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc_block;  // 4096 = 256 * 16
     ws_ = (acc_data_t *)malloc(
-            nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);
+            nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);  // workspace acc data
 }
 
 template <bool with_relu, data_type_t dst_data_type>
@@ -824,7 +824,7 @@ execute_forward() {
     const int is_oc_scale = oscales.mask_ == 1 << 1;
     assert(utils::implication(!is_oc_scale, oscales.mask_ == 0));
 
-    /*
+    /* // drv: use omp parallel, ker: use jit kernel
      * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
      * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
      * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
@@ -832,11 +832,11 @@ execute_forward() {
      *   \______drv_______/\_______________________ker_______________________/
      */
 
-    auto ker = [&](int ithr, int nthr) {
+    auto ker = [&](int ithr, int nthr) {  // ithr: id, nthr: total number
         const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;
 
         int start{0}, end{0};
-        balance211(work_amount, nthr, ithr, start, end);
+        balance211(work_amount, nthr, ithr, start, end);  // output start and end
 
         int n{0}, g{0}, oh{0}, oc_b1{0};
         nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh,
