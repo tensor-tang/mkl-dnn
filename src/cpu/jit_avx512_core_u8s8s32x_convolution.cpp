@@ -803,9 +803,17 @@ template <bool with_relu, data_type_t dst_data_type>
 _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
 ~_jit_avx512_core_u8s8s32x_convolution_fwd_t() { delete ker_; free(ws_); }
 
+
+/* // drv: use omp parallel, ker: use jit kernel
+ * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
+ * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
+ * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
+ *
+ *   \______drv_______/\_______________________ker_______________________/
+ */
 template <bool with_relu, data_type_t dst_data_type>
 void _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
-execute_forward() {
+run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales_t& oscales, const int& is_oc_scale) {  // ithr: id, nthr: total number
     auto src_u8 = reinterpret_cast<const src_data_t *>(input_memory(0));
     auto wei_s8 = reinterpret_cast<const wei_data_t *>(input_memory(1));
     auto bia = reinterpret_cast<const char *>(input_memory(2));
@@ -818,63 +826,57 @@ execute_forward() {
     const size_t bia_dt_size = conf_.with_bias()
         ? types::data_type_size(conf_.cdesc()->bias_desc.data_type) : 0;
 
+    const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;
+
+    int start{0}, end{0};
+    balance211(work_amount, nthr, ithr, start, end);  // output start and end
+
+    int n{0}, g{0}, oh{0}, oc_b1{0};
+    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh,
+                            oc_b1, c.oc_nb1);
+
+    jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
+    p.acc_s32 = ws_ + ithr * ws_per_thread_;
+
+    for (int iwork = start; iwork < end; ++iwork) {
+        const int kh_start = nstl::max(0, c.t_pad - oh * c.stride_h);
+        const int kh_end = nstl::min(c.kh,
+                c.ih + c.t_pad - oh * c.stride_h);
+
+        assert(oh * c.stride_h + kh_start - c.t_pad >= 0);
+        assert(oh * c.stride_h + kh_end - c.t_pad <= c.ih);
+
+        const int ih_start = oh * c.stride_h + kh_start - c.t_pad;
+        const int oc_start = (g * c.oc_nb1 + oc_b1) * c.oc_block;
+
+        p.src_u8 = &src_u8[src_d.blk_off(n, g * c.ic, ih_start)];
+        p.wei_s8 = &wei_s8[conf_.with_groups()
+            ? wei_d.blk_off(g, oc_b1, 0, kh_start)
+            : wei_d.blk_off(oc_b1, 0, kh_start)];
+        p.bia = &bia[oc_start * bia_dt_size];
+        p.scales = &oscales.scales_[is_oc_scale * oc_start];
+        p.dst = &dst[dst_d.blk_off(n, oc_start, oh)];
+
+        p.kh_range = (size_t)(kh_end - kh_start);
+
+        ker_->ker_(&p);
+
+        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh, oc_b1, c.oc_nb1);
+    }
+}
+
+template <bool with_relu, data_type_t dst_data_type>
+void _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
+execute_forward() {
     const auto &c = ker_->c_;
 
     const auto &oscales = conf_.attr()->output_scales_;
     const int is_oc_scale = oscales.mask_ == 1 << 1;
     assert(utils::implication(!is_oc_scale, oscales.mask_ == 0));
 
-    /* // drv: use omp parallel, ker: use jit kernel
-     * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
-     * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
-     * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
-     *
-     *   \______drv_______/\_______________________ker_______________________/
-     */
-
-    auto ker = [&](int ithr, int nthr) {  // ithr: id, nthr: total number
-        const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;
-
-        int start{0}, end{0};
-        balance211(work_amount, nthr, ithr, start, end);  // output start and end
-
-        int n{0}, g{0}, oh{0}, oc_b1{0};
-        nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh,
-                                oc_b1, c.oc_nb1);
-
-        jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
-        p.acc_s32 = ws_ + ithr * ws_per_thread_;
-
-        for (int iwork = start; iwork < end; ++iwork) {
-            const int kh_start = nstl::max(0, c.t_pad - oh * c.stride_h);
-            const int kh_end = nstl::min(c.kh,
-                    c.ih + c.t_pad - oh * c.stride_h);
-
-            assert(oh * c.stride_h + kh_start - c.t_pad >= 0);
-            assert(oh * c.stride_h + kh_end - c.t_pad <= c.ih);
-
-            const int ih_start = oh * c.stride_h + kh_start - c.t_pad;
-            const int oc_start = (g * c.oc_nb1 + oc_b1) * c.oc_block;
-
-            p.src_u8 = &src_u8[src_d.blk_off(n, g * c.ic, ih_start)];
-            p.wei_s8 = &wei_s8[conf_.with_groups()
-                ? wei_d.blk_off(g, oc_b1, 0, kh_start)
-                : wei_d.blk_off(oc_b1, 0, kh_start)];
-            p.bia = &bia[oc_start * bia_dt_size];
-            p.scales = &oscales.scales_[is_oc_scale * oc_start];
-            p.dst = &dst[dst_d.blk_off(n, oc_start, oh)];
-
-            p.kh_range = (size_t)(kh_end - kh_start);
-
-            ker_->ker_(&p);
-
-            nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh, oc_b1, c.oc_nb1);
-        }
-    };
-
 #   pragma omp parallel
     {
-        ker(omp_get_thread_num(), omp_get_num_threads());
+        run_ker(omp_get_thread_num(), omp_get_num_threads(), c, oscales, is_oc_scale);
     }
 }
 
