@@ -132,8 +132,8 @@ void test_conv(bool with_fuse = true) {
     // conv desc
     test_convolution_sizes_t cd(
       2, 1,  // bs, gp
-      32, 258, 258,  // ic, ih, iw
-      64, 256, 256,  // oc, oh, ow
+      12, 16, 16,  // ic, ih, iw
+      32, 14, 14,  // oc, oh, ow
       3, 3,  // kh, kw
       0, 0,  // ph, pw
       1, 1   // sh, sw

@@ -108,8 +108,8 @@ private:
     pd_t conf_;
 
     jit_avx512_core_u8s8s32x_conv_fwd_ker_t *ker_;
-    size_t ws_per_thread_;
-    acc_data_t *ws_;
+    size_t ws_per_thread_;  // ow * 16, 
+    acc_data_t *ws_;  // memory for acc, workspace
 };
 
 }

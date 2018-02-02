@@ -564,7 +564,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_ow_oc_block() {
             and_(reg_state, ~STATE_FIRST_DST_LOAD);
 
             test(reg_ic_b2, reg_ic_b2);
-            jne(l_ic_b2, T_NEAR);
+            jne(l_ic_b2, T_NEAR);  // near is used for jmp nearby, the default order is [short, near, auto]
         }
 
         const int step_src = - c_.ic + c_.iw * c_.ngroups * c_.ic; // [ih:+1]
@@ -580,13 +580,13 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
 
 #   define READ_PARAM(reg, field) \
         mov(reg, ptr[abi_param1 + offsetof(call_params_t, field)])
-    READ_PARAM(reg_ptr_src_u8, src_u8);
+    READ_PARAM(reg_ptr_src_u8, src_u8);  // this are all input datas pointer: reg_ptr
     READ_PARAM(reg_ptr_wei_s8, wei_s8);
     READ_PARAM(reg_ptr_bia, bia);
     READ_PARAM(reg_ptr_scales, scales);
     READ_PARAM(reg_ptr_acc_s32, acc_s32);
     READ_PARAM(reg_ptr_dst, dst);
-    READ_PARAM(reg_kh, kh_range);
+    READ_PARAM(reg_kh, kh_range);  // kh range
 #   undef READ_PARAM
 
     compute_ow_oc_block();
@@ -685,13 +685,19 @@ status_t jit_avx512_core_u8s8s32x_conv_fwd_ker_t::init_conf(jit_conv_conf_t &c,
 
     c.oc_nb1 = c.oc / c.oc_block;
 
-    const int ic_nb = c.ic / c.ic_block;
+    const int ic_nb = c.ic / c.ic_block;  // ic number of block
+    // when kw < 7 and ic_nb divisible by 4, so be 4.
+    // else
+    //   if divisible by 2, then be 2 
+    //   else 1
+    // Actually, nb1 is like next level block 4 or 2 or 1
     c.ic_nb1 = c.kw < 7 && ic_nb % 4 == 0 ? 4 : (ic_nb % 2 == 0 ? 2 : 1);
+    // next level number of block
     c.ic_nb2 = ic_nb / c.ic_nb1;
 
     const int nregs = cpu_isa_traits<avx512_core>::n_vregs;
     const int nregs_aux = 4; // scales, tmp, 0, 1_s16
-    const int nregs_wei = c.ic_nb1 * c.kw;
+    const int nregs_wei = c.ic_nb1 * c.kw;  // 4/2/1 * kw
 
     /* performance restrictions of kernel for convolutions with large spatial domains */
     c.large_spatial = (c.iw > EXPL_BCAST_LARGE_SPATIAL_MIN_IW
@@ -728,9 +734,9 @@ status_t jit_avx512_core_u8s8s32x_conv_fwd_ker_t::init_conf(jit_conv_conf_t &c,
     }
     /* ideally it would be great to have:
      *
-     * c.ur_ow = nstl::min(c.ow, c.ur_ow_max);
-     * c.ur_ow_nsteps = c.ow / c.ur_ow;
-     * c.ur_ow_tail = c.ow - c.ur_ow_nsteps * c.ur_ow;
+     * c.ur_ow = nstl::min(c.ow, c.ur_ow_max);         // every ur_ow
+     * c.ur_ow_nsteps = c.ow / c.ur_ow;                // steps for ur_ow
+     * c.ur_ow_tail = c.ow - c.ur_ow_nsteps * c.ur_ow; // tail ow
      *
      * but due to the restriction [r2] we need to call `separate` kernel to
      * handle right padding.
@@ -794,7 +800,7 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t(const pd_t *pd,
             *conf_.attr());
 
     const int nthreads = omp_get_max_threads();
-    ws_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc_block;  // 4096 = 256 * 16
+    ws_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc_block;  //  = ow * 16
     ws_ = (acc_data_t *)malloc(
             nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);  // workspace acc data
 }
@@ -804,7 +810,7 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
 ~_jit_avx512_core_u8s8s32x_convolution_fwd_t() { delete ker_; free(ws_); }
 
 
-/* // drv: use omp parallel, ker: use jit kernel
+/* // drv(driver): use omp parallel, ker: use jit kernel
  * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
  * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
  * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
@@ -826,18 +832,23 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
     const size_t bia_dt_size = conf_.with_bias()
         ? types::data_type_size(conf_.cdesc()->bias_desc.data_type) : 0;
 
-    const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;
+    ////////////////////// after code is in lambda
+    const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;  // 2*1*14*2
 
-    int start{0}, end{0};
-    balance211(work_amount, nthr, ithr, start, end);  // output start and end
+    int start{0}, end{0};  // driver how to portion mb*(oc/16)*oh for omp level
+    balance211(work_amount, nthr, ithr, start, end);  // cal start and end according to ithr, nthr, mount
 
     int n{0}, g{0}, oh{0}, oc_b1{0};
+    // find the index of mb, gp, oh and ob_nb1 respectively
+    // for this threads according to "start"
     nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh,
-                            oc_b1, c.oc_nb1);
+                            oc_b1, c.oc_nb1); 
 
     jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
     p.acc_s32 = ws_ + ithr * ws_per_thread_;
 
+    // why have start and end here, and why need for is because
+    // each thread may need compute several blocks(each block have its own mb_idx, gp_idx, oh_idx, ob_nb1_idx)
     for (int iwork = start; iwork < end; ++iwork) {
         const int kh_start = nstl::max(0, c.t_pad - oh * c.stride_h);
         const int kh_end = nstl::min(c.kh,
@@ -858,7 +869,7 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
         p.dst = &dst[dst_d.blk_off(n, oc_start, oh)];
 
         p.kh_range = (size_t)(kh_end - kh_start);
-
+        // before codes are all prepare p: call_params_t
         ker_->ker_(&p);
 
         nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh, oc_b1, c.oc_nb1);
@@ -874,7 +885,7 @@ execute_forward() {
     const int is_oc_scale = oscales.mask_ == 1 << 1;
     assert(utils::implication(!is_oc_scale, oscales.mask_ == 0));
 
-#   pragma omp parallel
+//#   pragma omp parallel
     {
         run_ker(omp_get_thread_num(), omp_get_num_threads(), c, oscales, is_oc_scale);
     }

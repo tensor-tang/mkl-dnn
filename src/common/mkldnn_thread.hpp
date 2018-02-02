@@ -44,12 +44,13 @@ inline void balance211(T n, U team, U tid, T &n_start, T &n_end) {
         n_start = 0;
         n_my = n;
     } else if (n_min == 1) {
-        // team = T1 + T2
+        // team = T1 + T2.
+        // T1: the rest bs; T2: bs can be equally distributed by threads
         // n = T1*n1 + T2*n2  (n1 - n2 = 1)
         T n1 = utils::div_up(n, (T)team);
-        T n2 = n1 - 1;
-        T T1 = n - n2 * (T)team;
-        n_my = (T)tid < T1 ? n1 : n2;
+        T n2 = n1 - 1;  // full part that can be divided by team, every thread should at least have n2
+        T T1 = n - n2 * (T)team;  // the rest bs
+        n_my = (T)tid < T1 ? n1 : n2;  // the number this id should compute
         n_start = (T)tid <= T1 ? tid * n1 : T1 * n1 + ((T)tid - T1) * n2;
     }
 
