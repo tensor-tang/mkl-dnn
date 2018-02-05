@@ -59,6 +59,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
 
     Reg64 reg_kh = rax;
     Reg64 reg_ic_b2 = rbx;
+    // Reg64 reg_oc_b1 = rdx;
 
     Reg32 reg_state = esi;
 
@@ -578,6 +579,24 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_ow_oc_block() {
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
     preamble();
 
+    // TODO:
+    // 1. move into asmble; done.
+    // 2. use label to for;
+    // 3. enable omp to test; done.
+    // 4. write back as lamda
+    const auto &oscales = attr_.output_scales_;
+    const bool is_oc_scale = oscales.mask_ == 1 << 1;
+    const int step_wgt = c_.kw * c_.kh * c_.ic * c_.oc_block * sizeof_wei_dt();
+    const int step_bia = c_.oc_block * sizeof_acc_dt();  // note: check when the dst dtype is u8
+    const int step_dst = c_.oc_block * sizeof_dst_dt();
+    const int step_scl = is_oc_scale ? c_.oc_block * sizeof_acc_dt() : 0;
+    int wgt_offset = 0, bia_offset = 0, scl_offset = 0, dst_offset = 0;
+
+    for (int oc_b1 = 0; oc_b1 < c_.oc_nb1; ++oc_b1) {
+    //Label l_oc_nb;
+    //mov(reg_oc_b1, c_.oc_nb1);
+    //L(l_oc_nb); {  // is really ok in this func? pre/post-amble need do something?
+
 #   define READ_PARAM(reg, field) \
         mov(reg, ptr[abi_param1 + offsetof(call_params_t, field)])
     READ_PARAM(reg_ptr_src_u8, src_u8);  // this are all input datas pointer: reg_ptr
@@ -589,7 +608,22 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
     READ_PARAM(reg_kh, kh_range);  // kh range
 #   undef READ_PARAM
 
-    compute_ow_oc_block();
+        // dec(reg_oc_b1);
+        add(reg_ptr_wei_s8, wgt_offset);
+        add(reg_ptr_bia, bia_offset);
+        add(reg_ptr_dst, dst_offset);
+        add(reg_ptr_scales, scl_offset);
+
+        compute_ow_oc_block();
+
+        wgt_offset += step_wgt;
+        bia_offset += step_bia;
+        scl_offset += step_scl;
+        dst_offset += step_dst;
+
+        // test(reg_oc_b1, reg_oc_b1);
+        // jne(l_oc_nb,T_NEAR);
+    }
 
     postamble();
 }
@@ -833,7 +867,7 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
         ? types::data_type_size(conf_.cdesc()->bias_desc.data_type) : 0;
 
     ////////////////////// after code is in lambda
-    const int work_amount = c.mb * c.ngroups * c.oh * c.oc_nb1;  // 2*1*14*2
+    const int work_amount = c.mb * c.ngroups * c.oh;
 
     int start{0}, end{0};  // driver how to portion mb*(oc/16)*oh for omp level
     balance211(work_amount, nthr, ithr, start, end);  // cal start and end according to ithr, nthr, mount
@@ -841,8 +875,7 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
     int n{0}, g{0}, oh{0}, oc_b1{0};
     // find the index of mb, gp, oh and ob_nb1 respectively
     // for this threads according to "start"
-    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh,
-                            oc_b1, c.oc_nb1); 
+    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh);
 
     jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
     p.acc_s32 = ws_ + ithr * ws_per_thread_;
@@ -863,16 +896,15 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
         p.src_u8 = &src_u8[src_d.blk_off(n, g * c.ic, ih_start)];
         p.wei_s8 = &wei_s8[conf_.with_groups()
             ? wei_d.blk_off(g, oc_b1, 0, kh_start)
-            : wei_d.blk_off(oc_b1, 0, kh_start)];
+            : (oc_b1*(c.kw*c.kh*c.ic)*c.oc_block+kh_start*(c.kw*c.ic)*c.oc_block)]; //wei_d.blk_off(oc_b1, 0, kh_start)];
         p.bia = &bia[oc_start * bia_dt_size];
         p.scales = &oscales.scales_[is_oc_scale * oc_start];
-        p.dst = &dst[dst_d.blk_off(n, oc_start, oh)];
-
+        p.dst = &dst[n*(c.oc*c.oh*c.ow) + oh*(c.oc*c.ow)];  //dst_d.blk_off(n, oc_start, oh)
         p.kh_range = (size_t)(kh_end - kh_start);
         // before codes are all prepare p: call_params_t
         ker_->ker_(&p);
 
-        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh, oc_b1, c.oc_nb1);
+        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh);
     }
 }
 
@@ -885,7 +917,7 @@ execute_forward() {
     const int is_oc_scale = oscales.mask_ == 1 << 1;
     assert(utils::implication(!is_oc_scale, oscales.mask_ == 0));
 
-//#   pragma omp parallel
+#   pragma omp parallel
     {
         run_ker(omp_get_thread_num(), omp_get_num_threads(), c, oscales, is_oc_scale);
     }
