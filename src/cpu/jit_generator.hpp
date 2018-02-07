@@ -70,7 +70,7 @@ template <> struct cpu_isa_traits<avx2> {
 template <> struct cpu_isa_traits<avx512_common> {
     static constexpr int vlen_shift = 6;
     static constexpr int vlen = 64;
-    static constexpr int n_vregs = 32;
+    static constexpr int n_vregs = 32 -8;
 };
 template <> struct cpu_isa_traits<avx512_core>:
     public cpu_isa_traits<avx512_common> {};

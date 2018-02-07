@@ -22,6 +22,7 @@
 #include "mkldnn.hpp"
 #include <stdint.h>
 
+#include <sys/time.h>
 #include <math.h>
 
 namespace mkldnn {
@@ -179,7 +180,6 @@ protected:
                 ++padR[1];
         }
 
-        auto test = [&]() {
             auto conv_desc = with_bias ?
                 convolution_forward::desc(aprop_kind, p.aalgorithm,
                     c_src_desc, c_weights_desc, c_bias_desc, c_dst_desc,
@@ -201,19 +201,31 @@ protected:
 
             std::vector<primitive> pipeline;
             pipeline.push_back(conv);
-            auto s = stream(stream::kind::lazy);
-            s.submit(pipeline).wait();
 
-            auto ref_memory = memory(memory::primitive_desc(c_dst_desc, eng),
-                    ref_dst_data.get());
-            compute_ref_conv_fwd<data_t_src,data_t_wei,data_t_acc,data_t_dst>(
-                cd, attr, c_src_desc, c_weights_desc, c_bias_desc, c_dst_desc,
-                c_src.get(), c_weights.get(), c_bias.get(), ref_memory);
-            compare_data<data_t_dst>(ref_memory, c_dst.get());
-        };
 
-        if (catch_expected_failures(test, p.expect_to_fail, p.expected_status))
-            return;
+const int burning_iter = 100;
+const int iter = 100;
+
+
+    for (auto i = 0; i < burning_iter; ++i) {
+      stream(stream::kind::eager).submit(pipeline).wait();
+    }
+
+    auto get_current_ms = []() -> double {
+      struct timeval time;
+      gettimeofday(&time, NULL);
+      return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
+    };
+
+    auto t_start = get_current_ms();
+    for (auto i = 0; i < iter; ++i) {
+      stream(stream::kind::eager).submit(pipeline).wait();
+    }
+    auto t_stop = get_current_ms();
+
+    std::cout << "conv relu avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+   
+
     }
 };
 

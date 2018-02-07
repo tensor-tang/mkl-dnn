@@ -129,7 +129,16 @@ struct test_convolution_sizes_t {
 void test_conv(bool with_fuse = true) {
     auto eng = engine(engine::cpu, 0);
 
-    // conv desc
+/*    // conv desc
+    test_convolution_sizes_t cd(
+      2, 1,  // bs, gp
+      64, 128, 128,  // ic, ih, iw
+      128, 128, 128,  // oc, oh, ow
+      3, 3,  // kh, kw
+      0, 0,  // ph, pw
+      1, 1   // sh, sw
+      );
+*/
     test_convolution_sizes_t cd(
       2, 1,  // bs, gp
       32, 258, 258,  // ic, ih, iw
@@ -138,6 +147,7 @@ void test_conv(bool with_fuse = true) {
       0, 0,  // ph, pw
       1, 1   // sh, sw
       );
+
 
     using u8 = uint8_t;
     using s8 = int8_t;
