@@ -89,6 +89,10 @@ struct jit_conv_conf_t {
     int src_count;
     bool expl_bcast;
     bool large_spatial;
+    /* conv1x1 fuse*/
+    int oc_1x1;
+    int oc_1x1_nb1;
+    int nreg_1x1_wei;  // 4
 };
 
 /*

@@ -126,18 +126,8 @@ struct test_convolution_sizes_t {
     int dilh, dilw;
 };
 
-void test_conv(bool with_fuse = true) {
+void test_conv(const test_convolution_sizes_t& cd, bool with_fuse = true) {
     auto eng = engine(engine::cpu, 0);
-
-    // conv desc
-    test_convolution_sizes_t cd(
-      2, 1,  // bs, gp
-      12, 16, 16,  // ic, ih, iw
-      32, 14, 14,  // oc, oh, ow
-      3, 3,  // kh, kw
-      0, 0,  // ph, pw
-      1, 1   // sh, sw
-      );
 
     using u8 = uint8_t;
     using s8 = int8_t;
@@ -284,7 +274,9 @@ void test_conv(bool with_fuse = true) {
     
 }
 
-// usage ./test_fuse with_fuse buring_iter valid_iter
+/* usage:
+ ./test_fuse with_fuse buring_iter valid_iter test_index
+*/
 int main(int argc, char **argv) {
     std::cout << argv[0] << std::endl;
     bool with_fuse = true;
@@ -303,8 +295,43 @@ int main(int argc, char **argv) {
       iter = std::stoi(in);
       assert(iter > 0 && iter <= 5000);
     }
+    int test_idx = 1;
+    if (argc >= 5) {
+      std::string in(argv[4]);
+      test_idx = std::stoi(in);
+      assert(test_idx >= 0 && test_idx < 3);
+    }
+
+    // conv desc
+    test_convolution_sizes_t cds[] = {
+      { // small one
+        2, 1,  // bs, gp
+        12, 16, 16,  // ic, ih, iw
+        32, 14, 14,  // oc, oh, ow
+        3, 3,  // kh, kw
+        0, 0,  // ph, pw
+        1, 1   // sh, sw
+      },
+      {
+        2, 1,  // bs, gp
+        64, 128, 128,  // ic, ih, iw
+        128, 128, 128,  // oc, oh, ow
+        3, 3,  // kh, kw
+        0, 0,  // ph, pw
+        1, 1   // sh, sw
+      },
+      {
+        2, 1,  // bs, gp
+        32, 258, 258,  // ic, ih, iw
+        64, 256, 256,  // oc, oh, ow
+        3, 3,  // kh, kw
+        0, 0,  // ph, pw
+        1, 1   // sh, sw
+      }
+    };
+
     try {
-        test_conv(with_fuse);
+        test_conv(cds[test_idx], with_fuse);
         // test_reorder();
     }
     catch(error& e) {
