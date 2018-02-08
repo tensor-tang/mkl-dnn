@@ -27,7 +27,7 @@ add_definitions(-DMKLDNN_DLL -DMKLDNN_DLL_EXPORTS)
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
 
-option(ENABLE_VNNI "Enable VNNI Instructions." ON)
+option(ENABLE_VNNI "Enable VNNI Instructions." OFF)
 if(ENABLE_VNNI)
     add_definitions(-DENABLE_VNNI)
 endif()
