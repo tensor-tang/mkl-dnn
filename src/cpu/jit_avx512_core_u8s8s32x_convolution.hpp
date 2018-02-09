@@ -110,7 +110,8 @@ private:
     jit_avx512_core_u8s8s32x_conv_fwd_ker_t *ker_;
     size_t ws_per_thread_;  // ow * 16, 
     acc_data_t *ws_;  // memory for acc, workspace
-    acc_data_t *ws_1x1_;  // same size of ws_per_thread_ : ow * 16(this is part of 1x1 oc)
+    size_t ws_1x1_per_thread_;  // ow * oc1x1
+    acc_data_t *ws_1x1_;
 
     // weight and dst memory temporary saved here, should move outside later
     wei_data_t *wei_1x1_;

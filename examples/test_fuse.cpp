@@ -271,7 +271,6 @@ void test_conv(const test_convolution_sizes_t& cd, bool with_fuse = true) {
 #endif
 
     std::cout << "conv relu avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
-    
 }
 
 /* usage:
@@ -295,7 +294,7 @@ int main(int argc, char **argv) {
       iter = std::stoi(in);
       assert(iter > 0 && iter <= 5000);
     }
-    int test_idx = 1;
+    int test_idx = 2;
     if (argc >= 5) {
       std::string in(argv[4]);
       test_idx = std::stoi(in);

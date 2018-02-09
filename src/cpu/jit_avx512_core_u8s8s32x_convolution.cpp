@@ -66,7 +66,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
 
     // TODO: make this as a reg32
     int oc3x3_nb_idx; 
-    int cur_ow_idx; // current ow index
+    int cur_ow_idx; // current ow index based on ur_ow_step * ur_ow
 
     
     Reg32 reg_1x1_src_4u8 = edx;
@@ -88,7 +88,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
     // Reg64 reg_ptr_dst = r15;  // actually not be used when 1x1, r15 would be for 1x1 dst
 
     Reg64 reg_ptr_1x1_acc_s32 = r10;
-    Reg64 reg_ptr_1x1_wei_s8 = reg_ptr_wei_s8;
+    Reg64 reg_ptr_1x1_wei_s8 = rbp;
     Reg64 reg_ptr_1x1_dst = r15;
 
     Zmm vreg_1x1_src_bcast_u8 = zmm26;
@@ -138,13 +138,18 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
         return Zmm(id_reg_wei);
     }
 
+    int id_vreg_dst_1x1_ow_oc(int ur_ow_idx, int oc_b_idx) {
+      return (cur_ow_idx + ur_ow_idx ) * c_.oc_1x1 + oc_b_idx * c_.oc_block;
+    }
+    
     // 1x1 wei: [oc/16][i/4][16o][4i]
-    // reg_ptr_1x1_wei_s8: already contained [oc/16]
-    // load 4* [16o][4i] once time, so need i/16(same as oc_nb1 of 3x3) times to load all [i/4][16o][4i]
-    void load_1x1_wei_s8(int ic_nb);
+    // reg_ptr_1x1_wei_s8: at the start point!
+    // load 4* [16o][4i] once time
+    // so the format: [oc/16][i/16][4][16o][4i] == [oc1x1/16][oc3x3/16][4][16o][4i]
+    void load_1x1_wei_s8(int oc3x3_nb_idx, int oc1x1_nb_idx);
 
     // load this is similar to 3x3 acc, since the ow and oh are then same
-    void load_1x1_acc_s32(int ur_ow_idx);
+    void load_1x1_acc_s32(int ur_ow_idx, int oc_b_idx);
 
 
     bool maybe_relu(int position);
@@ -217,12 +222,14 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_wei_s8() {
     }
 }
 
-void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_wei_s8(int ic_nb) {
+void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_wei_s8(int oc3x3_nb_idx, int oc1x1_nb_idx) {
+    // [oc1x1/16][oc3x3/16][4][16o][4i]
     // load 16 ic once time
-    int off = ic_nb * c_.nreg_1x1_wei * c_.oc_block * c_.ic_block;  // nb * 4 * [16o][4i]
+    const int ocic_block = c_.oc_block * c_.ic_block;
+    int off = oc1x1_nb_idx * c_.oc * c_.oc_block + oc3x3_nb_idx * c_.nreg_1x1_wei * ocic_block;
     for (int i = 0; i < c_.nreg_1x1_wei; ++i) {
       vmovups(vreg_1x1_wei_s8(i), ptr[reg_ptr_1x1_wei_s8 + off * sizeof_wei_dt()]);
-      off += (c_.oc_block * c_.ic_block);
+      off += ocic_block;
     }
 }
 
@@ -244,14 +251,14 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_acc_s32(int ur_ow) {
     L(l_ret);
 }
 
-void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx) {
+void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx, int oc_b_idx) {
     if (oc3x3_nb_idx == 0) {
       // clear reg is enough when first load
       vpxord(vreg_1x1_acc_s32, vreg_1x1_acc_s32, vreg_1x1_acc_s32);
     } else {
-      // load from mem
-      vmovups(vreg_1x1_acc_s32, ptr[reg_ptr_1x1_acc_s32 + reg_off_acc_s32
-                  + ur_ow_idx * c_.oc_block * sizeof_acc_dt()]);
+      // load from memory
+      vmovups(vreg_1x1_acc_s32, ptr[reg_ptr_1x1_acc_s32
+                  + id_vreg_dst_1x1_ow_oc(ur_ow_idx, oc_b_idx) * sizeof_acc_dt()]);
     }
 }
 
@@ -312,7 +319,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::store_dst(int ur_ow) {
 
         if (maybe_relu(0))
             vmaxps(Zmm(r), vreg_zero, Zmm(r));
-/*  below is for eltwise sum, do not need here
+        /*  below is for eltwise sum, do not need here
         if (sum_idx != -1) {
             auto vreg_prev_dst = vreg_zero; // reuse register w/ zeros... 
 
@@ -353,40 +360,43 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::store_dst(int ur_ow) {
         // 1. cvt 16*s32 to 16*u8 of 3x3 output data
         vpmovusdb(Xmm(r), Zmm(r));
 
-        // 2. load acc of 1x1
-        load_1x1_acc_s32(o);
-        for (int ic_part = 0; ic_part < c_.nreg_1x1_wei; ++ic_part) {
-          // 3. get 4*u8 from Xmm(r)
-          movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
-          psrldq(Xmm(r), 4);  // shift 4 bytes to right
+        for (int oc1x1_nb_idx = 0; oc1x1_nb_idx < c_.oc_1x1_nb1; ++oc1x1_nb_idx) {
+          // 2. load wei and acc
+          load_1x1_wei_s8(oc3x3_nb_idx, oc1x1_nb_idx);
+          load_1x1_acc_s32(o, oc1x1_nb_idx);
+          for (int ic_part = 0; ic_part < c_.nreg_1x1_wei; ++ic_part) {
+            // 3. get 4*u8 from Xmm(r)
+            movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
+            psrldq(Xmm(r), 4);  // shift 4 bytes to right
 
-          // 4. bcast
-          vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
+            // 4. bcast
+            vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
 
-          // 5. compute, the compute will add?
-          compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(ic_part),
-            vreg_1x1_src_bcast_u8);
-        }
+            // 5. compute
+            compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(ic_part), vreg_1x1_src_bcast_u8);
+          }
+          const int owoc_idx = id_vreg_dst_1x1_ow_oc(o, oc1x1_nb_idx);
+          if (oc3x3_nb_idx == c_.oc_nb1) {
+            // all oc3x3 of this point(h,w) is done.  can be use label and reg next version.
+            // last time, relu and same to dst
+            vmaxps(vreg_1x1_acc_s32, vreg_zero, vreg_1x1_acc_s32);
+            Address dst1x1 = ptr[reg_ptr_1x1_dst + owoc_idx * sizeof_dst_dt()];
+            vmovups(dst1x1, vreg_1x1_acc_s32);
+            /* // cvt dst to u8/s8
+            const int kk = id_1x1_vreg_acc();
+            switch (c_.dst_dt) {
+                case f32:
+                case s32: vmovups(dst1x1, Zmm(kk)); break;
+                case s8: vpmovsdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
+                case u8: vpmovusdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
+                default: assert(!"unknown dst_dt");
+            } */
+          } else {
+            // 6. move acc to acc memroy, for next time
+            vmovups(ptr[reg_ptr_1x1_acc_s32 + owoc_idx * sizeof_acc_dt()], vreg_1x1_acc_s32);
+          }
 
-        if (oc3x3_nb_idx == c_.oc_nb1) {
-          // all oc3x3 of this point(h,w) is done.  can be use label and reg next version.
-          // last time, relu and same to dst
-          vmaxps(vreg_1x1_acc_s32, vreg_zero, vreg_1x1_acc_s32);
-          Address dst1x1 = ptr[reg_ptr_1x1_dst + (cur_ow_idx + o ) * c_.oc_1x1 * sizeof_dst_dt()];
-          vmovups(dst1x1, vreg_1x1_acc_s32);
-          /* // cvt dst to u8/s8
-          const int kk = id_1x1_vreg_acc();
-          switch (c_.dst_dt) {
-              case f32:
-              case s32: vmovups(dst1x1, Zmm(kk)); break;
-              case s8: vpmovsdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
-              case u8: vpmovusdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
-              default: assert(!"unknown dst_dt");
-          } */
-        } else {
-          // 6. move acc to acc memroy, for next time
-          vmovups(ptr[reg_ptr_1x1_acc_s32 + reg_off_acc_s32
-                      + o * c_.oc_block * sizeof_acc_dt()], vreg_1x1_acc_s32);
+
         }
     }
 
@@ -701,9 +711,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
 #   define READ_PARAM(reg, field) \
         mov(reg, ptr[abi_param1 + offsetof(call_params_t, field)])
   
-    // read and load 1x1 wei before 3x3, since the pointer will be reused in 3x3
     READ_PARAM(reg_ptr_1x1_wei_s8, wei_1x1_s8);
-    load_1x1_wei_s8(oc3x3_nb_idx);
     READ_PARAM(reg_ptr_1x1_acc_s32, acc_1x1_s32);
     READ_PARAM(reg_ptr_1x1_dst, dst_1x1);
 
@@ -952,16 +960,18 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t(const pd_t *pd,
     ws_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc_block;  //  = ow * 16
     ws_ = (acc_data_t *)malloc(
             nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);  // workspace acc data
-    ws_1x1_ = (acc_data_t *)malloc(
-            nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);  // workspace acc data
 
     // 1x1 conv tmp place
+    const int oc1x1 = 96;
+    ws_1x1_per_thread_ = conf_.jcp_.ow * oc1x1;
+    ws_1x1_ = (acc_data_t *)malloc(
+                nthreads * ws_1x1_per_thread_ * sizeof(acc_data_t), 64);  // workspace acc data
+
     // TODO: move to outside interface
     // init weigth memory and dst memory here temporary
     // this oc should be the same in "init_conf", which should be load from jcp_
-    const int oc = 96;
-    wei_1x1_ = (wei_data_t *)malloc(oc * conf_.jcp_.oc * sizeof(wei_data_t), 64);
-    dst_1x1_ = (dst_data_t *)malloc(conf_.jcp_.mb * conf_.jcp_.oh * conf_.jcp_.ow * oc * sizeof(dst_data_t), 64);
+    wei_1x1_ = (wei_data_t *)malloc(oc1x1 * conf_.jcp_.oc * sizeof(wei_data_t), 64);
+    dst_1x1_ = (dst_data_t *)malloc(conf_.jcp_.mb * conf_.jcp_.oh * conf_.jcp_.ow * oc1x1 * sizeof(dst_data_t), 64);
 }
 
 template <bool with_relu, data_type_t dst_data_type>
@@ -996,19 +1006,20 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
         ? types::data_type_size(conf_.cdesc()->bias_desc.data_type) : 0;
 
     ////////////////////// after code is in lambda
-    const int work_amount = c.mb * c.ngroups * c.oh * c.oc_1x1_nb1;
+    const int work_amount = c.mb * c.ngroups * c.oh;
 
     int start{0}, end{0};  // driver how to portion mb*(oc/16)*oh for omp level
     balance211(work_amount, nthr, ithr, start, end);  // cal start and end according to ithr, nthr, mount
 
-    int n{0}, g{0}, oh{0}, oc_b1{0}, oc_1x1_b1{0};
+    int n{0}, g{0}, oh{0}, oc_b1{0};
     // find the index of mb, gp, oh and ob_nb1 respectively
     // for this threads according to "start"
-    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh, oc_1x1_b1, c.oc_1x1_nb1);
+    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh);
 
     jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
     p.acc_s32 = ws_ + ithr * ws_per_thread_;
-    p.acc_1x1_s32 = ws_1x1_ + ithr * ws_per_thread_;
+    p.acc_1x1_s32 = ws_1x1_ + ithr * ws_1x1_per_thread_;
+    p.wei_1x1_s8 = &wei_1x1_s8;
 
     // why have start and end here, and why need for is because
     // each thread may need compute several blocks(each block have its own mb_idx, gp_idx, oh_idx, ob_nb1_idx)
@@ -1028,8 +1039,7 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
             ? wei_d.blk_off(g, oc_b1, 0, kh_start)
             : (oc_b1*(c.kw*c.kh*c.ic)*c.oc_block+kh_start*(c.kw*c.ic)*c.oc_block)]; //wei_d.blk_off(oc_b1, 0, kh_start)];
 
-        p.wei_1x1_s8 = &wei_1x1_s8[oc_1x1_b1 *  c.oc * c.oc_block];
-        p.dst_1x1 = &dst_1x1[n*(c.oc_1x1*c.oh*c.ow) + oh*(c.oc_1x1*c.ow) + oc_1x1_b1*c.oc_block];
+        p.dst_1x1 = &dst_1x1[n*(c.oc_1x1*c.oh*c.ow) + oh*(c.oc_1x1*c.ow)];
 
         p.bia = &bia[oc_start * bia_dt_size];
         p.scales = &oscales.scales_[is_oc_scale * oc_start];
@@ -1038,7 +1048,7 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
         // before codes are all prepare p: call_params_t
         ker_->ker_(&p);
 
-        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh, oc_1x1_b1, c.oc_1x1_nb1);
+        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh);
     }
 }
 
