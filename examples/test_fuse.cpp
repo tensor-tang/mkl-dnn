@@ -193,35 +193,28 @@ std::unique_ptr<convolution_forward::primitive_desc> get_conv_pd(
     const std::unique_ptr<convolution_forward::desc>& conv_desc, bool with_relu = false, float negative_slope = 0.f) {
   // attribute
   auto rmode = round_mode::round_nearest;
-  primitive_attr mkl_attr = mkldnn::primitive_attr();
-  mkl_attr.set_int_output_round_mode(rmode);
+  primitive_attr attr = mkldnn::primitive_attr();
+  attr.set_int_output_round_mode(rmode);
   const int count = 1;  // number of scales
   const int mask = 0;  // multi-channel 1
   const float scale = 0.3f;
   std::vector<float> s(count, scale);
-  mkl_attr.set_output_scales(mask, s);
+  attr.set_output_scales(mask, s);
 
   if (with_relu) {
     post_ops ops;
     ops.append_eltwise(1.0f, algorithm::eltwise_relu, negative_slope, 0.f);
-    mkl_attr.set_post_ops(ops);
+    attr.set_post_ops(ops);
   }
    
   return std::unique_ptr<convolution_forward::primitive_desc>(
-      new convolution_forward::primitive_desc(*conv_desc, mkl_attr, eng));
+      new convolution_forward::primitive_desc(*conv_desc, attr, eng));
 }
 
 std::unique_ptr<eltwise_forward::primitive_desc> get_relu_pd(const memory::desc md) {
   auto relu_desc = eltwise_forward::desc(prop_kind::forward_inference, algorithm::eltwise_relu, md, 0.f, 0.f);
   return std::unique_ptr<eltwise_forward::primitive_desc>(
       new eltwise_forward::primitive_desc(relu_desc, eng));
-}
-
-std::unique_ptr<convolution_relu_forward::primitive_desc> get_conv_relu_pd(
-    const std::unique_ptr<convolution_forward::desc>& conv_desc, float negative_slope = 0.f) {
-  auto conv_relu_desc = convolution_relu_forward::desc(*conv_desc, negative_slope);
-  return std::unique_ptr<convolution_relu_forward::primitive_desc>(
-      new convolution_relu_forward::primitive_desc(conv_relu_desc, eng));
 }
 
 void test_conv(const test_convolution_sizes_t& cd, bool with_fuse = true, bool with_bias = true) {
@@ -231,34 +224,24 @@ void test_conv(const test_convolution_sizes_t& cd, bool with_fuse = true, bool w
     std::unique_ptr<convolution_forward::desc> conv_desc;
     std::unique_ptr<convolution_forward::primitive_desc> conv_pd;
     std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
-    std::unique_ptr<convolution_relu_forward::primitive_desc> conv_relu_pd;
     std::unique_ptr<memory> src, wgt, dst, bia;
 
     conv_desc = get_conv_desc(cd, with_bias);
-    conv_pd = get_conv_pd(conv_desc);
+    conv_pd = get_conv_pd(conv_desc, with_fuse);
     src.reset(new memory(conv_pd->src_primitive_desc()));
     wgt.reset(new memory(conv_pd->weights_primitive_desc()));
     dst.reset(new memory(conv_pd->dst_primitive_desc()));
     if (with_bias) {
       bia.reset(new memory(conv_pd->bias_primitive_desc()));
     }
+    if (with_bias) {
+      fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *bia, *dst));
+    } else {
+      fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *dst));
+    }
+    pipeline.push_back(*fwd);
 
-    if (with_fuse) {
-      conv_relu_pd = get_conv_relu_pd(conv_desc);
-      if (with_bias) {
-        fwd.reset(new convolution_relu_forward(*conv_relu_pd, *src, *wgt, *bia, *dst));
-      } else {
-        fwd.reset(new convolution_relu_forward(*conv_relu_pd, *src, *wgt, *dst));
-      }
-      pipeline.push_back(*fwd);
-    } else {  // without fusion
-      if (with_bias) {
-        fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *bia, *dst));
-      } else {
-        fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *dst));
-      }
-      pipeline.push_back(*fwd);
-
+    if (!with_fuse) {  // without fusion
       // add relu
       relu_pd = get_relu_pd(conv_pd->dst_primitive_desc().desc());
       fwd_relu.reset(new eltwise_forward(*relu_pd, *dst, *dst));
@@ -306,8 +289,7 @@ void test_conv3x3_1x1(test_convolution_sizes_t cd, bool with_bias = true) {
     std::unique_ptr<memory> src, wgt3x3, dst3x3, bia3x3, wgt1x1, bia1x1, dst;
 
     std::unique_ptr<convolution_forward::desc> desc3x3, desc1x1;
-    std::unique_ptr<convolution_forward::primitive_desc> pdconv3x3, pdconv1x1;
-    std::unique_ptr<convolution_relu_forward::primitive_desc> pdconvrelu3x3, pdconvrelu1x1;
+    std::unique_ptr<convolution_forward::primitive_desc> pd3x3, pd1x1;
 
     desc3x3 = get_conv_desc(cd, with_bias, data_traits<u8>::data_type);
     cd.ic = cd.oc; cd.ih = cd.oh; cd.iw = cd.ow;
@@ -315,33 +297,27 @@ void test_conv3x3_1x1(test_convolution_sizes_t cd, bool with_bias = true) {
     cd.kh = 1; cd.kw = 1;
     desc1x1 = get_conv_desc(cd, with_bias, data_traits<s32>::data_type);
 
-    pdconv3x3 = get_conv_pd(desc3x3);
-    pdconv1x1 = get_conv_pd(desc1x1);
-    pdconvrelu3x3 = get_conv_relu_pd(desc3x3);
-    pdconvrelu1x1 = get_conv_relu_pd(desc1x1);
+    pd3x3 = get_conv_pd(desc3x3, true);
+    pd1x1 = get_conv_pd(desc1x1, true);
 
-    src.reset(new memory(pdconv3x3->src_primitive_desc()));
-    wgt3x3.reset(new memory(pdconv3x3->weights_primitive_desc()));
-    wgt1x1.reset(new memory(pdconv1x1->weights_primitive_desc()));
-    dst3x3.reset(new memory(pdconv3x3->dst_primitive_desc()));
-    dst.reset(new memory(pdconv1x1->dst_primitive_desc()));
+    src.reset(new memory(pd3x3->src_primitive_desc()));
+    wgt3x3.reset(new memory(pd3x3->weights_primitive_desc()));
+    wgt1x1.reset(new memory(pd1x1->weights_primitive_desc()));
+    dst3x3.reset(new memory(pd3x3->dst_primitive_desc()));
+    dst.reset(new memory(pd1x1->dst_primitive_desc()));
     if (with_bias) {
-      bia3x3.reset(new memory(pdconv3x3->bias_primitive_desc()));
-      bia1x1.reset(new memory(pdconv1x1->bias_primitive_desc()));
+      bia3x3.reset(new memory(pd3x3->bias_primitive_desc()));
+      bia1x1.reset(new memory(pd1x1->bias_primitive_desc()));
     }
 
     if (with_bias) {
-      fwd3x3.reset(new convolution_relu_forward(*pdconvrelu3x3, *src, *wgt3x3, *bia3x3, *dst3x3));
+      fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *bia3x3, *dst3x3));
+      fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *bia1x1, *dst));
     } else {
-      fwd3x3.reset(new convolution_relu_forward(*pdconvrelu3x3, *src, *wgt3x3, *dst3x3));
+      fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *dst3x3));
+      fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *dst));
     }
     pp3x3.push_back(*fwd3x3);
-
-    if (with_bias) {
-      fwd1x1.reset(new convolution_relu_forward(*pdconvrelu1x1, *dst3x3, *wgt1x1, *bia1x1, *dst));
-    } else {
-      fwd1x1.reset(new convolution_relu_forward(*pdconvrelu1x1, *dst3x3, *wgt1x1, *dst));
-    }
     pp1x1.push_back(*fwd1x1);
 
     for (auto i = 0; i < burning_iter; ++i) {
