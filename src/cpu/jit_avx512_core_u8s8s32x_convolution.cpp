@@ -730,7 +730,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
     const int step_scl = is_oc_scale ? c_.oc_block * sizeof_acc_dt() : 0;
     int wgt_offset = 0, bia_offset = 0, scl_offset = 0, dst_offset = 0;
 
-    for (int oc3x3_nb_idx = 0; oc3x3_nb_idx < c_.oc_nb1; ++oc3x3_nb_idx) {
+    for (oc3x3_nb_idx = 0; oc3x3_nb_idx < c_.oc_nb1; ++oc3x3_nb_idx) {
     //Label l_oc_nb;
     //mov(reg_oc_b1, c_.oc_nb1);
     //L(l_oc_nb); {  // is really ok in this func? pre/post-amble need do something?
