@@ -144,7 +144,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
     // reg_ptr_1x1_wei_s8: at the start point!
     // [oc1x1/16][oc3x3/(4*nreg)][nreg][16o][4i]
     // often load 16 ic once time
-    void load_1x1_wei_s8(int oc3x3_nb_idx, int oc1x1_nb_idx, int nreg);
+    void load_1x1_wei_s8(int oc3x3_nb_idx, int oc1x1_nb_idx);
     
 
     // load this is similar to 3x3 acc, since the ow and oh are then same
@@ -152,7 +152,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
 
     // o is the idx of ow inside ur_ow of store_dst()
     // output oc1x1_nb_idx at o point of 4*u8 (4/16) in oc3x3
-    void compute_1x1(int o, int wei_reg_id, int oc1x1_nb_idx);
+    void compute_1x1(int o, int oc1x1_nb_idx);
 
     bool maybe_relu(int position);
 
@@ -225,14 +225,14 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_wei_s8() {
 }
 
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_wei_s8(
-    int oc3x3_nb_idx, int oc1x1_nb_idx, int nreg) {
+    int oc3x3_nb_idx, int oc1x1_nb_idx) {
     // [oc1x1/16][oc3x3/(4*nreg)][nreg][16o][4i]
     // often load 16 ic once time
     const int ocic_block = c_.oc_block * c_.ic_block;
     int off = oc1x1_nb_idx * c_.oc * c_.oc_block + oc3x3_nb_idx * c_.nreg_1x1_wei * ocic_block;
-    for (int i = 0; i < nreg; ++i) {
+    for (int i = 0; i < 1; ++i) {
       vmovups(vreg_1x1_wei_s8(i), ptr[reg_ptr_1x1_wei_s8 + off * sizeof_wei_dt()]);
-      off += ocic_block;
+        off += ocic_block;
     }
 }
 
@@ -267,7 +267,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx, in
 
 
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_1x1(
-    int o, int wei_reg_id, int oc1x1_nb_idx) {
+    int o, int oc1x1_nb_idx) {
   // o is the idx of ow inside ur_ow of store_dst()
   // output oc1x1_nb_idx at o of ur
   // r is the id of vreg_acc
@@ -278,7 +278,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_1x1(
   // Xmm(r) is 16*u8
   movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
   vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
-  compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(wei_reg_id), vreg_1x1_src_bcast_u8);
+  compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(0), vreg_1x1_src_bcast_u8);
   
   const int owoc_idx = id_vreg_dst_1x1_ow_oc(o, oc1x1_nb_idx);
   if (oc3x3_nb_idx == c_.oc_nb1) {
@@ -400,17 +400,9 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::store_dst(int ur_ow) {
     // ic1x1_4: 3x3 output 16 channel every time, cal 4 once time
     for (int ic1x1_4 = 0; ic1x1_4 < c_.oc_block/4; ++ic1x1_4) {
       for (int oc1x1_nb_idx = 0; oc1x1_nb_idx < c_.oc_1x1_nb1; ++oc1x1_nb_idx) {
-        load_1x1_wei_s8(oc3x3_nb_idx, oc1x1_nb_idx, c_.nreg_1x1_wei);
-        for (int step = 0; step < nb; ++step) {
-          for (int nb2 = 0; nb2 < c_.nreg_1x1_wei; ++ nb2) {
-            const int o = step * c_.nreg_1x1_wei + nb2;
-            compute_1x1(o, nb2, oc1x1_nb_idx);
-          }
-        }
-        // ur_ow tail
-        for (int tail_idx = 0; tail_idx < ur_ow_tail; ++tail_idx) {
-          const int o = nb * c_.nreg_1x1_wei + tail_idx;
-          compute_1x1(o, tail_idx, oc1x1_nb_idx);
+        load_1x1_wei_s8(oc3x3_nb_idx, oc1x1_nb_idx);
+        for (int o = 0; o < ur_ow; ++o){
+            compute_1x1(o, oc1x1_nb_idx);
         }
       }
       if (ic1x1_4 == 3) break;  // the last time do not need shift src
