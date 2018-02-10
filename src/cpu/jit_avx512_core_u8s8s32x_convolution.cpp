@@ -67,6 +67,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
     // TODO: make this as a reg32
     int oc3x3_nb_idx; 
     int cur_ow_idx; // current ow index based on ur_ow_step * ur_ow
+    static constexpr int once_src = 4;
 
     
     Reg32 reg_1x1_src_4u8 = edx;
@@ -141,18 +142,19 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
     }
     
     // 1x1 wei: [oc/16][i/4][16o][4i]
-    // reg_ptr_1x1_wei_s8: at the start point!
-    // [oc1x1/16][oc3x3/(4*nreg)][nreg][16o][4i]
-    // often load 16 ic once time
-    void load_1x1_wei_s8(int oc3x3_nb_idx, int oc1x1_nb_idx);
+    // Note: reg_ptr_1x1_wei_s8: at the start point!
+    // [(oc/16)/nreg][nreg][ic/4][16o][4i]
+    // load nreg [16o][4i] once time
+    void load_1x1_wei_s8(int ic_4_idx, int oc_16_idx, int nreg);
     
 
     // load this is similar to 3x3 acc, since the ow and oh are then same
     void load_1x1_acc_s32(int ur_ow_idx, int oc_b_idx);
 
-    // o is the idx of ow inside ur_ow of store_dst()
-    // output oc1x1_nb_idx at o point of 4*u8 (4/16) in oc3x3
-    void compute_1x1(int o, int oc1x1_nb_idx);
+    // ur_ow is the same one in store_dst()
+    // output oc1x1_nb_idx at o point of 4*u8 (4/16) in oc3x3// output: 1x1 [16o of oc1x1_nb_idx][4i of ic1x1_4_offset] of all ur_ow
+    void compute_1x1(
+      int ur_ow, int reg_idx, int oc1x1_nb_idx, int ic1x1_4_offset);
 
     bool maybe_relu(int position);
 
@@ -225,14 +227,14 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_wei_s8() {
 }
 
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_wei_s8(
-    int oc3x3_nb_idx, int oc1x1_nb_idx) {
-    // [oc1x1/16][oc3x3/(4*nreg)][nreg][16o][4i]
-    // often load 16 ic once time
-    const int ocic_block = c_.oc_block * c_.ic_block;
-    int off = oc1x1_nb_idx * c_.oc * c_.oc_block + oc3x3_nb_idx * c_.nreg_1x1_wei * ocic_block;
-    for (int i = 0; i < 1; ++i) {
+    int ic_4_idx, int oc_16_idx, int nreg) {
+    // [(oc/16)/nreg][nreg][ic/4][16o][4i]
+    const int ocic_block = c_.oc_block * c_.ic_block;  // == [16o][4i] == 64
+    const int nreg_block = c_.oc * c_.oc_block ;  // == [ic/4][16o][4i] == oc3x3 * 16
+    int off = oc_16_idx * nreg_block + ic_4_idx * ocic_block;
+    for (int i = 0; i < nreg; ++i) {
       vmovups(vreg_1x1_wei_s8(i), ptr[reg_ptr_1x1_wei_s8 + off * sizeof_wei_dt()]);
-        off += ocic_block;
+      off += nreg_block;
     }
 }
 
@@ -265,42 +267,44 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx, in
     }
 }
 
-
+// output: 1x1 [16o of oc1x1_nb_idx][4i of ic1x1_4_offset] of all ur_ow
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_1x1(
-    int o, int oc1x1_nb_idx) {
-  // o is the idx of ow inside ur_ow of store_dst()
-  // output oc1x1_nb_idx at o of ur
-  // r is the id of vreg_acc
-  const int r = id_vreg_dst(o);
-  
-  load_1x1_acc_s32(o, oc1x1_nb_idx);
-  // Zmm(r) is 16*s32
-  // Xmm(r) is 16*u8
-  movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
-  vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
-  compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(0), vreg_1x1_src_bcast_u8);
-  
-  const int owoc_idx = id_vreg_dst_1x1_ow_oc(o, oc1x1_nb_idx);
-  if (oc3x3_nb_idx == c_.oc_nb1) {
-    // all oc3x3 of this point(h,w) is done.  can be use label and reg next version.
-    // last time, relu and same to dst
-    vmaxps(vreg_1x1_acc_s32, vreg_zero, vreg_1x1_acc_s32);
-    Address dst1x1 = ptr[reg_ptr_1x1_dst + owoc_idx * sizeof_dst_dt()];
-    vmovups(dst1x1, vreg_1x1_acc_s32);
-    /* // cvt dst to u8/s8
-    const int kk = id_1x1_vreg_acc();
-    switch (c_.dst_dt) {
-        case f32:
-        case s32: vmovups(dst1x1, Zmm(kk)); break;
-        case s8: vpmovsdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
-        case u8: vpmovusdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
-        default: assert(!"unknown dst_dt");
-    } */
-  } else {
-    // 6. move acc to acc memroy, for next time
-    vmovups(ptr[reg_ptr_1x1_acc_s32 + owoc_idx * sizeof_acc_dt()], vreg_1x1_acc_s32);
-  }
+    int ur_ow, int reg_idx, int oc1x1_nb_idx, int ic1x1_4_offset) {
 
+  for (int o = 0; o < ur_ow; ++o) {
+    // o is the idx of ow inside ur_ow of store_dst()
+    // output oc1x1_nb_idx at o of ur
+    // r is the id of vreg_acc
+    const int r = id_vreg_dst(o);
+    
+    load_1x1_acc_s32(o, oc1x1_nb_idx);
+    // Zmm(r) is 16*s32
+    // Xmm(r) is 16*u8
+    movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
+    vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
+    compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(reg_idx), vreg_1x1_src_bcast_u8);
+    
+    const int owoc_idx = id_vreg_dst_1x1_ow_oc(o, oc1x1_nb_idx);
+    if (ic1x1_4_offset == c_.oc_nb1 * once_src - 1) {
+      // the last 4ic of 1x1, can be label
+      // relu and same to dst
+      vmaxps(vreg_1x1_acc_s32, vreg_zero, vreg_1x1_acc_s32);
+      Address dst1x1 = ptr[reg_ptr_1x1_dst + owoc_idx * sizeof_dst_dt()];
+      vmovups(dst1x1, vreg_1x1_acc_s32);
+      /* // cvt dst to u8/s8
+      const int kk = id_1x1_vreg_acc();
+      switch (c_.dst_dt) {
+          case f32:
+          case s32: vmovups(dst1x1, Zmm(kk)); break;
+          case s8: vpmovsdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
+          case u8: vpmovusdb(Xmm(kk), Zmm(kk)); vmovups(dst1x1, Xmm(kk)); break;
+          default: assert(!"unknown dst_dt");
+      } */
+    } else {
+      // 6. move acc to acc memroy, for next time
+      vmovups(ptr[reg_ptr_1x1_acc_s32 + owoc_idx * sizeof_acc_dt()], vreg_1x1_acc_s32);
+    }
+  }
 }
 
 
@@ -395,17 +399,28 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::store_dst(int ur_ow) {
 
     ///////////////// conv 1x1 /////////////////////////////////////////
     // the Zmm of acc (0~ur_ow) are still avaiable when the for(ur_ow) done.
-    const int nb = ur_ow / c_.nreg_1x1_wei;
-    const int ur_ow_tail = ur_ow - nb * c_.nreg_1x1_wei;
     // ic1x1_4: 3x3 output 16 channel every time, cal 4 once time
-    for (int ic1x1_4 = 0; ic1x1_4 < c_.oc_block/4; ++ic1x1_4) {
-      for (int oc1x1_nb_idx = 0; oc1x1_nb_idx < c_.oc_1x1_nb1; ++oc1x1_nb_idx) {
-        load_1x1_wei_s8(oc3x3_nb_idx, oc1x1_nb_idx);
-        for (int o = 0; o < ur_ow; ++o){
-            compute_1x1(o, oc1x1_nb_idx);
+    
+    // assert(c_.oc_block % once_src == 0)
+    for (int ic1x1_4_idx = 0; ic1x1_4_idx < c_.oc_block/once_src; ++ic1x1_4_idx) {
+      const int ic1x1_4_offset = oc3x3_nb_idx * once_src + ic1x1_4_idx;
+      for (int b2 = 0; b2 < c_.oc_1x1_16_nreg; ++b2) {
+        const int b1 = b2 * c_.nreg_1x1_wei;
+        load_1x1_wei_s8(ic1x1_4_offset, b1, c_.nreg_1x1_wei);
+        for (int reg_idx = 0; reg_idx < c_.nreg_1x1_wei; ++reg_idx) {
+          const int oc1x1_nb_idx = b1 + reg_idx;
+          compute_1x1(ur_ow, reg_idx, oc1x1_nb_idx, ic1x1_4_offset);
         }
       }
-      if (ic1x1_4 == 3) break;  // the last time do not need shift src
+      if (c_.oc_1x1_16_nreg_tail != 0) {
+        const int tail_start = c_.oc_1x1_16_nreg * c_.nreg_1x1_wei;
+        load_1x1_wei_s8(ic1x1_4_offset, tail_start, c_.oc_1x1_16_nreg_tail);
+        for (int tail_idx = 0; tail_idx < c_.oc_1x1_16_nreg_tail; ++tail_idx) {
+          const int oc1x1_nb_idx = tail_start + tail_idx;
+          compute_1x1(ur_ow, tail_idx, oc1x1_nb_idx, ic1x1_4_offset);
+        }
+      }
+      if (ic1x1_4_idx == 3) break;  // the last time do not need shift src
       // shift 4 of src Xmm
       for (int o = 0; o < ur_ow; ++o) {
         psrldq(Xmm(id_vreg_dst(o)), 4);  // shift 4 bytes to right
@@ -827,7 +842,10 @@ status_t jit_avx512_core_u8s8s32x_conv_fwd_ker_t::init_conf(jit_conv_conf_t &c,
     // below for 1x1 conv
     c.oc_1x1 = 96; // get from cd.xxx
     c.oc_1x1_nb1 = c.oc_1x1 / c.oc_block;
-    c.nreg_1x1_wei = 4;  // load 4* [16o][4i] once time
+    // load n*[i/4][16o][4i] once time, n_max = 4
+    c.nreg_1x1_wei = c.oc_1x1_nb1 > 4 ? 4 : c.oc_1x1_nb1;
+    c.oc_1x1_16_nreg = c.oc_1x1_nb1 / c.nreg_1x1_wei;
+    c.oc_1x1_16_nreg_tail = c.oc_1x1_nb1 % c.nreg_1x1_wei;
 
     const bool args_ok = true
         && c.ic % c.ic_block == 0  // ic should be 4x

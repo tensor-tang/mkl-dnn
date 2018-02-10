@@ -92,7 +92,9 @@ struct jit_conv_conf_t {
     /* conv1x1 fuse*/
     int oc_1x1;
     int oc_1x1_nb1;
-    int nreg_1x1_wei;  // 4
+    int nreg_1x1_wei;  // max:4 yet; can change to larger
+    int oc_1x1_16_nreg;  // oc/16 / nreg
+    int oc_1x1_16_nreg_tail;  // oc/16 % nreg
 };
 
 /*
