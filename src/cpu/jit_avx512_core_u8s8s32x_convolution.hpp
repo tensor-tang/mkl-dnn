@@ -97,7 +97,6 @@ struct _jit_avx512_core_u8s8s32x_convolution_fwd_t : public cpu_primitive_t {
     typedef typename prec_traits<dst_data_type>::type dst_data_t;
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
 
-    void run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales_t& oscales, const int& is_oc_scale);
     virtual void execute(event_t *e) {
         execute_forward();
         e->set_state(event_t::ready);

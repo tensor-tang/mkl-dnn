@@ -94,8 +94,7 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
 
     Zmm vreg_1x1_src_bcast_u8 = zmm26;
     Zmm vreg_1x1_acc_s32 = zmm27;
-
-    const int id_1x1_vreg_acc() {return 27;}
+    constexpr int id_vreg_1x1_acc() {return 27;}
 
     Zmm vreg_scales = zmm28;
     Zmm vreg_tmp = zmm29;
@@ -137,8 +136,10 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
         return Zmm(k);
     }
 
-    int id_vreg_dst_1x1_ow_oc(int ur_ow_idx, int oc_b_idx) {
-      return (cur_ow_idx + ur_ow_idx ) * c_.oc_1x1 + oc_b_idx * c_.oc_block;
+    // ur_ow_idx is in ur_ow, actually ow: current_ow_idx + ur_ow_idx
+    // oc_nb_idx is in oc1x1/16
+    int acc_1x1_offset(int ur_ow_idx, int oc_nb_idx) {
+      return (cur_ow_idx + ur_ow_idx ) * c_.oc_1x1 + oc_nb_idx * c_.oc_block;
     }
     
     // 1x1 wei: [oc/16][i/4][16o][4i]
@@ -146,15 +147,12 @@ struct jit_avx512_core_u8s8s32x_conv_fwd_ker_t: public jit_generator {
     // [(oc/16)/nreg][nreg][ic/4][16o][4i]
     // load nreg [16o][4i] once time
     void load_1x1_wei_s8(int ic_4_idx, int oc_16_idx, int nreg);
-    
 
-    // load this is similar to 3x3 acc, since the ow and oh are then same
-    void load_1x1_acc_s32(int ur_ow_idx, int oc_b_idx);
+    void load_1x1_acc_s32(int ur_ow_idx, int oc_nb_idx, int ic1x1_4_offset);
 
     // ur_ow is the same one in store_dst()
     // output oc1x1_nb_idx at o point of 4*u8 (4/16) in oc3x3// output: 1x1 [16o of oc1x1_nb_idx][4i of ic1x1_4_offset] of all ur_ow
-    void compute_1x1(
-      int ur_ow, int reg_idx, int oc1x1_nb_idx, int ic1x1_4_offset);
+    void compute_1x1(int ur_ow, int reg_idx, int oc1x1_nb_idx, int ic1x1_4_offset);
 
     bool maybe_relu(int position);
 
@@ -256,43 +254,43 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_acc_s32(int ur_ow) {
     L(l_ret);
 }
 
-void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx, int oc_b_idx) {
-    if (oc3x3_nb_idx == 0) {
+void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::load_1x1_acc_s32(int ur_ow_idx, int oc_nb_idx, int ic1x1_4_offset) {
+    if (ic1x1_4_offset == 0) {
       // clear reg is enough when first load
       vpxord(vreg_1x1_acc_s32, vreg_1x1_acc_s32, vreg_1x1_acc_s32);
     } else {
       // load from memory
       vmovups(vreg_1x1_acc_s32, ptr[reg_ptr_1x1_acc_s32
-                  + id_vreg_dst_1x1_ow_oc(ur_ow_idx, oc_b_idx) * sizeof_acc_dt()]);
+          + acc_1x1_offset(ur_ow_idx, oc_nb_idx) * sizeof_acc_dt()]);
     }
 }
 
 // output: 1x1 [16o of oc1x1_nb_idx][4i of ic1x1_4_offset] of all ur_ow
 void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_1x1(
     int ur_ow, int reg_idx, int oc1x1_nb_idx, int ic1x1_4_offset) {
-
   for (int o = 0; o < ur_ow; ++o) {
     // o is the idx of ow inside ur_ow of store_dst()
     // output oc1x1_nb_idx at o of ur
     // r is the id of vreg_acc
     const int r = id_vreg_dst(o);
-    
-    load_1x1_acc_s32(o, oc1x1_nb_idx);
+
+    load_1x1_acc_s32(o, oc1x1_nb_idx, ic1x1_4_offset);
     // Zmm(r) is 16*s32
     // Xmm(r) is 16*u8
     movd(reg_1x1_src_4u8, Xmm(r));  // lower 32bits
     vpbroadcastd(vreg_1x1_src_bcast_u8, reg_1x1_src_4u8);
     compute(vreg_1x1_acc_s32, vreg_1x1_wei_s8(reg_idx), vreg_1x1_src_bcast_u8);
-    
-    const int owoc_idx = id_vreg_dst_1x1_ow_oc(o, oc1x1_nb_idx);
+
+    // save to acc/dst
+    const int owoc_offset = acc_1x1_offset(o, oc1x1_nb_idx);
     if (ic1x1_4_offset == c_.oc_nb1 * once_src - 1) {
       // the last 4ic of 1x1, can be label
       // relu and same to dst
       vmaxps(vreg_1x1_acc_s32, vreg_zero, vreg_1x1_acc_s32);
-      Address dst1x1 = ptr[reg_ptr_1x1_dst + owoc_idx * sizeof_dst_dt()];
+      Address dst1x1 = ptr[reg_ptr_1x1_dst + owoc_offset * sizeof_dst_dt()];
       vmovups(dst1x1, vreg_1x1_acc_s32);
       /* // cvt dst to u8/s8
-      const int kk = id_1x1_vreg_acc();
+      constexpr int kk = id_vreg_1x1_acc();
       switch (c_.dst_dt) {
           case f32:
           case s32: vmovups(dst1x1, Zmm(kk)); break;
@@ -302,7 +300,7 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::compute_1x1(
       } */
     } else {
       // 6. move acc to acc memroy, for next time
-      vmovups(ptr[reg_ptr_1x1_acc_s32 + owoc_idx * sizeof_acc_dt()], vreg_1x1_acc_s32);
+      vmovups(ptr[reg_ptr_1x1_acc_s32 + owoc_offset * sizeof_acc_dt()], vreg_1x1_acc_s32);
     }
   }
 }
@@ -400,15 +398,14 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::store_dst(int ur_ow) {
     ///////////////// conv 1x1 /////////////////////////////////////////
     // the Zmm of acc (0~ur_ow) are still avaiable when the for(ur_ow) done.
     // ic1x1_4: 3x3 output 16 channel every time, cal 4 once time
-    
     // assert(c_.oc_block % once_src == 0)
     for (int ic1x1_4_idx = 0; ic1x1_4_idx < c_.oc_block/once_src; ++ic1x1_4_idx) {
       const int ic1x1_4_offset = oc3x3_nb_idx * once_src + ic1x1_4_idx;
       for (int b2 = 0; b2 < c_.oc_1x1_16_nreg; ++b2) {
-        const int b1 = b2 * c_.nreg_1x1_wei;
-        load_1x1_wei_s8(ic1x1_4_offset, b1, c_.nreg_1x1_wei);
+        const int oc_1x1_16_idx = b2 * c_.nreg_1x1_wei;
+        load_1x1_wei_s8(ic1x1_4_offset, oc_1x1_16_idx, c_.nreg_1x1_wei);
         for (int reg_idx = 0; reg_idx < c_.nreg_1x1_wei; ++reg_idx) {
-          const int oc1x1_nb_idx = b1 + reg_idx;
+          const int oc1x1_nb_idx = oc_1x1_16_idx + reg_idx;
           compute_1x1(ur_ow, reg_idx, oc1x1_nb_idx, ic1x1_4_offset);
         }
       }
@@ -721,36 +718,34 @@ void jit_avx512_core_u8s8s32x_conv_fwd_ker_t::generate() {
     // 1. move into asmble; done.
     // 2. use label to for;
     // 3. enable omp to test; done.
-    // 4. write back as lamda
+    // 4. write back as lamda; done
     const auto &oscales = attr_.output_scales_;
     const bool is_oc_scale = oscales.mask_ == 1 << 1;
     const int step_wgt = c_.kw * c_.kh * c_.ic * c_.oc_block * sizeof_wei_dt();
     const int step_bia = c_.oc_block * sizeof_acc_dt();  // note: check when the dst dtype is u8
-    const int step_dst = c_.oc_block * sizeof_dst_dt();
+    //const int step_dst = c_.oc_block * sizeof_dst_dt();
     const int step_scl = is_oc_scale ? c_.oc_block * sizeof_acc_dt() : 0;
-    int wgt_offset = 0, bia_offset = 0, scl_offset = 0, dst_offset = 0;
+    int wgt_offset = 0, bia_offset = 0, scl_offset = 0; //, dst_offset = 0;
 
     for (oc3x3_nb_idx = 0; oc3x3_nb_idx < c_.oc_nb1; ++oc3x3_nb_idx) {
     //Label l_oc_nb;
     //mov(reg_oc_b1, c_.oc_nb1);
     //L(l_oc_nb); {  // is really ok in this func? pre/post-amble need do something?
 
-#   define READ_PARAM(reg, field) \
-        mov(reg, ptr[abi_param1 + offsetof(call_params_t, field)])
-  
-    READ_PARAM(reg_ptr_1x1_wei_s8, wei_1x1_s8);
-    READ_PARAM(reg_ptr_1x1_acc_s32, acc_1x1_s32);
-    READ_PARAM(reg_ptr_1x1_dst, dst_1x1);
+#define READ_PARAM(reg, field) \
+            mov(reg, ptr[abi_param1 + offsetof(call_params_t, field)])
 
-
-    READ_PARAM(reg_ptr_src_u8, src_u8);  // this are all input datas pointer: reg_ptr
-    READ_PARAM(reg_ptr_wei_s8, wei_s8);
-    READ_PARAM(reg_ptr_bia, bia);
-    READ_PARAM(reg_ptr_scales, scales);
-    READ_PARAM(reg_ptr_acc_s32, acc_s32);
-    // READ_PARAM(reg_ptr_dst, dst_1x1);  // do not use 3x3 dst
-    READ_PARAM(reg_kh, kh_range);  // kh range
-#   undef READ_PARAM
+        READ_PARAM(reg_ptr_src_u8, src_u8);  // this are all input datas pointer: reg_ptr
+        READ_PARAM(reg_ptr_wei_s8, wei_s8);
+        READ_PARAM(reg_ptr_bia, bia);
+        READ_PARAM(reg_ptr_scales, scales);
+        READ_PARAM(reg_ptr_acc_s32, acc_s32);
+        // READ_PARAM(reg_ptr_dst, dst_1x1);  // do not use 3x3 dst
+        READ_PARAM(reg_ptr_1x1_wei_s8, wei_1x1_s8);  // the start point of 1x1wei
+        READ_PARAM(reg_ptr_1x1_acc_s32, acc_1x1_s32);
+        READ_PARAM(reg_ptr_1x1_dst, dst_1x1);
+        READ_PARAM(reg_kh, kh_range);  // kh range
+#undef READ_PARAM
 
         // dec(reg_oc_b1);
         add(reg_ptr_wei_s8, wgt_offset);
@@ -843,7 +838,7 @@ status_t jit_avx512_core_u8s8s32x_conv_fwd_ker_t::init_conf(jit_conv_conf_t &c,
     c.oc_1x1 = 96; // get from cd.xxx
     c.oc_1x1_nb1 = c.oc_1x1 / c.oc_block;
     // load n*[i/4][16o][4i] once time, n_max = 4
-    c.nreg_1x1_wei = c.oc_1x1_nb1 > 4 ? 4 : c.oc_1x1_nb1;
+    c.nreg_1x1_wei = c.oc_1x1_nb1 >= 4 ? 4 : c.oc_1x1_nb1;
     c.oc_1x1_16_nreg = c.oc_1x1_nb1 / c.nreg_1x1_wei;
     c.oc_1x1_16_nreg_tail = c.oc_1x1_nb1 % c.nreg_1x1_wei;
 
@@ -982,7 +977,7 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
 _jit_avx512_core_u8s8s32x_convolution_fwd_t(const pd_t *pd,
         const input_vector &inputs, const output_vector &outputs)
     : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd), ker_(nullptr)
-    , ws_(nullptr), ws_1x1_(nullptr) {
+    , ws_(nullptr), ws_1x1_(nullptr), wei_1x1_(nullptr), dst_1x1_(nullptr) {
     ker_ = new jit_avx512_core_u8s8s32x_conv_fwd_ker_t(conf_.jcp_,
             *conf_.attr());
 
@@ -1009,22 +1004,13 @@ _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
 ~_jit_avx512_core_u8s8s32x_convolution_fwd_t() {
   delete ker_; free(ws_); free(ws_1x1_); free(wei_1x1_); free(dst_1x1_);}
 
-
-/* // drv(driver): use omp parallel, ker: use jit kernel
- * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
- * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
- * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
- *
- *   \______drv_______/\_______________________ker_______________________/
- */
 template <bool with_relu, data_type_t dst_data_type>
 void _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
-run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales_t& oscales, const int& is_oc_scale) {  // ithr: id, nthr: total number
+execute_forward() {
     auto src_u8 = reinterpret_cast<const src_data_t *>(input_memory(0));
     auto wei_s8 = reinterpret_cast<const wei_data_t *>(input_memory(1));
     auto bia = reinterpret_cast<const char *>(input_memory(2));
     auto dst = reinterpret_cast<dst_data_t *>(memory(0));
-
     auto wei_1x1_s8 = reinterpret_cast<const wei_data_t *> (wei_1x1_);
     auto dst_1x1 = reinterpret_cast<const dst_data_t *> (dst_1x1_);
 
@@ -1035,65 +1021,68 @@ run_ker(int ithr, int nthr, const jit_conv_conf_t& c, const mkldnn::impl::scales
     const size_t bia_dt_size = conf_.with_bias()
         ? types::data_type_size(conf_.cdesc()->bias_desc.data_type) : 0;
 
-    ////////////////////// after code is in lambda
-    const int work_amount = c.mb * c.ngroups * c.oh;
-
-    int start{0}, end{0};  // driver how to portion mb*(oc/16)*oh for omp level
-    balance211(work_amount, nthr, ithr, start, end);  // cal start and end according to ithr, nthr, mount
-
-    int n{0}, g{0}, oh{0}, oc_b1{0};
-    // find the index of mb, gp, oh and ob_nb1 respectively
-    // for this threads according to "start"
-    nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh);
-
-    jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
-    p.acc_s32 = ws_ + ithr * ws_per_thread_;
-    p.acc_1x1_s32 = ws_1x1_ + ithr * ws_1x1_per_thread_;
-    p.wei_1x1_s8 = &wei_1x1_s8;
-
-    // why have start and end here, and why need for is because
-    // each thread may need compute several blocks(each block have its own mb_idx, gp_idx, oh_idx, ob_nb1_idx)
-    for (int iwork = start; iwork < end; ++iwork) {
-        const int kh_start = nstl::max(0, c.t_pad - oh * c.stride_h);
-        const int kh_end = nstl::min(c.kh,
-                c.ih + c.t_pad - oh * c.stride_h);
-
-        assert(oh * c.stride_h + kh_start - c.t_pad >= 0);
-        assert(oh * c.stride_h + kh_end - c.t_pad <= c.ih);
-
-        const int ih_start = oh * c.stride_h + kh_start - c.t_pad;
-        const int oc_start = (g * c.oc_nb1 + oc_b1) * c.oc_block;
-
-        p.src_u8 = &src_u8[src_d.blk_off(n, g * c.ic, ih_start)];
-        p.wei_s8 = &wei_s8[conf_.with_groups()
-            ? wei_d.blk_off(g, oc_b1, 0, kh_start)
-            : (oc_b1*(c.kw*c.kh*c.ic)*c.oc_block+kh_start*(c.kw*c.ic)*c.oc_block)]; //wei_d.blk_off(oc_b1, 0, kh_start)];
-
-        p.dst_1x1 = &dst_1x1[n*(c.oc_1x1*c.oh*c.ow) + oh*(c.oc_1x1*c.ow)];
-
-        p.bia = &bia[oc_start * bia_dt_size];
-        p.scales = &oscales.scales_[is_oc_scale * oc_start];
-        p.dst = &dst[n*(c.oc*c.oh*c.ow) + oh*(c.oc*c.ow)];  //dst_d.blk_off(n, oc_start, oh)
-        p.kh_range = (size_t)(kh_end - kh_start);
-        // before codes are all prepare p: call_params_t
-        ker_->ker_(&p);
-
-        nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh);
-    }
-}
-
-template <bool with_relu, data_type_t dst_data_type>
-void _jit_avx512_core_u8s8s32x_convolution_fwd_t<with_relu, dst_data_type>::
-execute_forward() {
     const auto &c = ker_->c_;
 
     const auto &oscales = conf_.attr()->output_scales_;
     const int is_oc_scale = oscales.mask_ == 1 << 1;
     assert(utils::implication(!is_oc_scale, oscales.mask_ == 0));
 
+    /* // drv(driver): use omp parallel, ker: use jit kernel
+     * s [mb]              [ih]              [iw][g]       [ic/16*4i]     [4i]
+     * w     [g][oc/16]    [kh][ic/16*4i]    [kw]                    [16o][4i]
+     * d [mb]          [oh]              [ow]    [g][oc/16]          [16o]
+     *
+     *   \______drv_______/\_______________________ker_______________________/
+     */
+    auto ker = [&](int ithr, int nthr) {
+        const int work_amount = c.mb * c.ngroups * c.oh;
+
+        int start{0}, end{0};  // driver how to portion mb*(oc/16)*oh for omp level
+        balance211(work_amount, nthr, ithr, start, end);  // cal start and end according to ithr, nthr, mount
+
+        int n{0}, g{0}, oh{0}, oc_b1{0};
+        // find the index of mb, gp, oh and ob_nb1 respectively
+        // for this threads according to "start"
+        nd_iterator_init(start, n, c.mb, g, c.ngroups, oh, c.oh);
+
+        jit_avx512_core_u8s8s32x_conv_fwd_ker_t::call_params_t p = {};
+        p.acc_s32 = ws_ + ithr * ws_per_thread_;
+        p.acc_1x1_s32 = ws_1x1_ + ithr * ws_1x1_per_thread_;
+        p.wei_1x1_s8 = &wei_1x1_s8;
+
+        // why have start and end here, and why need for is because
+        // each thread may need compute several blocks(each block have its own mb_idx, gp_idx, oh_idx, ob_nb1_idx)
+        for (int iwork = start; iwork < end; ++iwork) {
+            const int kh_start = nstl::max(0, c.t_pad - oh * c.stride_h);
+            const int kh_end = nstl::min(c.kh,
+                    c.ih + c.t_pad - oh * c.stride_h);
+
+            assert(oh * c.stride_h + kh_start - c.t_pad >= 0);
+            assert(oh * c.stride_h + kh_end - c.t_pad <= c.ih);
+
+            const int ih_start = oh * c.stride_h + kh_start - c.t_pad;
+            const int oc_start = (g * c.oc_nb1 + oc_b1) * c.oc_block;
+
+            p.src_u8 = &src_u8[src_d.blk_off(n, g * c.ic, ih_start)];
+            p.wei_s8 = &wei_s8[conf_.with_groups()
+                ? wei_d.blk_off(g, oc_b1, 0, kh_start)
+                : (oc_b1*(c.kw*c.kh*c.ic)*c.oc_block+kh_start*(c.kw*c.ic)*c.oc_block)]; //wei_d.blk_off(oc_b1, 0, kh_start)];
+
+            p.bia = &bia[oc_start * bia_dt_size];
+            p.scales = &oscales.scales_[is_oc_scale * oc_start];
+            p.dst = &dst[n*(c.oc*c.oh*c.ow) + oh*(c.oc*c.ow)];  //dst_d.blk_off(n, oc_start, oh)
+            p.dst_1x1 = &dst_1x1[n*(c.oc_1x1*c.oh*c.ow) + oh*(c.oc_1x1*c.ow)];
+            p.kh_range = (size_t)(kh_end - kh_start);
+            // before codes are all prepare p: call_params_t
+            ker_->ker_(&p);
+
+            nd_iterator_step(n, c.mb, g, c.ngroups, oh, c.oh);
+        }
+    };
+
 #   pragma omp parallel
     {
-        run_ker(omp_get_thread_num(), omp_get_num_threads(), c, oscales, is_oc_scale);
+        ker(omp_get_thread_num(), omp_get_num_threads());
     }
 }
 
