@@ -69,6 +69,13 @@ if(WIN32)
     set_property(TEST simple-training-net-cpp PROPERTY ENVIRONMENT "PATH=${CTESTCONFIG_PATH}")
 endif()
 
+add_executable(test-fuse test_fuse.cpp)
+set_property(TARGET test-fuse PROPERTY CXX_STANDARD 11)
+if(UNIX)
+    target_link_libraries(test-fuse ${LIB_NAME} m)
+endif()
+#add_test(test-fuse test-fuse)
+
 add_executable(simple-net-int8-cpp simple_net_int8.cpp)
 set_property(TARGET simple-net-int8-cpp PROPERTY CXX_STANDARD 11)
 target_link_libraries(simple-net-int8-cpp ${LIB_NAME})
