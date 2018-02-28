@@ -28,6 +28,11 @@ add_definitions(-DMKLDNN_DLL -DMKLDNN_DLL_EXPORTS)
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
 
+option(ENABLE_VNNI "Enable VNNI Instructions." OFF)
+if(ENABLE_VNNI)
+    add_definitions(-DENABLE_VNNI)
+endif()
+
 option(MKLDNN_VERBOSE
     "allows Intel(R) MKL-DNN be verbose whenever MKLDNN_VERBOSE
     environment variable set to 1" ON) # enabled by default
@@ -56,6 +61,11 @@ if(WIN32)
     string(REPLACE ";" "\;" CTESTCONFIG_PATH "${CTESTCONFIG_PATH}")
 elseif(UNIX OR APPLE)
     set(CMAKE_CCXX_FLAGS "${CMAKE_CCXX_FLAGS} -Wall -Werror -Wno-unknown-pragmas")
+    set(CMAKE_CCXX_FLAGS "${CMAKE_CCXX_FLAGS} -Wno-unused-but-set-variable")
+    set(CMAKE_CCXX_FLAGS "${CMAKE_CCXX_FLAGS} -Wno-unused-variable -Wno-format-truncation")
+    if(ENABLE_VNNI)
+        set(CMAKE_CCXX_FLAGS "${CMAKE_CCXX_FLAGS} -mavx512f -mavx512cd -mavx512vl -mavx512bw -mavx512dq -mavx512vnni")
+    endif()
     set(CMAKE_CCXX_FLAGS "${CMAKE_CCXX_FLAGS} -fvisibility=internal")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fvisibility-inlines-hidden")
