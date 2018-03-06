@@ -295,6 +295,7 @@ void test_conv3x3_1x1(test_convolution_sizes_t cd, bool with_bias = true) {
     cd.ic = cd.oc; cd.ih = cd.oh; cd.iw = cd.ow;
     cd.oc = 96;
     cd.kh = 1; cd.kw = 1;
+    cd.padh = 0; cd.padw = 0;
     desc1x1 = get_conv_desc(cd, with_bias, data_traits<s32>::data_type);
 
     pd3x3 = get_conv_pd(desc3x3, true);
@@ -452,10 +453,13 @@ int main(int argc, char **argv) {
         1, 1   // sh, sw
       }
     };
+    auto &pm = cds[test_case_idx];
+    printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
+      pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
     try {
-        if (func_option == "3x3") {
+        if (func_option == "3x3") {  // 3x3_relu
           test_conv(cds[test_case_idx], with_fuse);
-        } else if (func_option == "1x1") {
+        } else if (func_option == "1x1") {  // 3x3_relu_1x1_relu
           test_conv3x3_1x1(cds[test_case_idx], with_bias);
         } else {  // reoder
           test_reorder();
