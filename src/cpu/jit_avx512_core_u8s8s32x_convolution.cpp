@@ -69,7 +69,7 @@ execute_forward()
         int ic_chunks = jcp.nb_ic / jcp.nb_ic_blocking;
 
         int start{0}, end{0};
-        int work_amount = jcp.mb * jcp.ngroups * oc_chunks * jcp.oh;
+        int work_amount = jcp.mb * jcp.ngroups * jcp.oh;
         balance211(work_amount, nthr, ithr, start, end);
 
         jit_conv_call_s p = { 0 };
@@ -84,16 +84,17 @@ execute_forward()
         int n{0}, g{0}, occ{0}, oh_s{0};
         if (jcp.loop_order == loop_cgn)
             nd_iterator_init(start,
-                occ, oc_chunks, g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
+                g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
         else if (jcp.loop_order == loop_gnc)
             nd_iterator_init(start,
-                g, jcp.ngroups, n, jcp.mb, occ, oc_chunks, oh_s, jcp.oh);
+                g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
         else if (jcp.loop_order == loop_ngc)
             nd_iterator_init(start,
-                n, jcp.mb, g, jcp.ngroups, occ, oc_chunks, oh_s, jcp.oh);
+                n, jcp.mb, g, jcp.ngroups, oh_s, jcp.oh);
         else
             assert(!"unsupported loop order");
         while (start < end) {
+          for (int occ = 0; occ < oc_chunks; ++occ) {
             int ocb = occ * jcp.nb_oc_blocking;
             int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
 
@@ -144,15 +145,16 @@ execute_forward()
                 src_w += jcp.ic_block * jcp.nb_ic_blocking;
                 wht_w += wht_ic_stride * jcp.nb_ic_blocking;
             }
+          }
             if (jcp.loop_order == loop_cgn)
                 nd_iterator_jump(start, end,
-                  occ, oc_chunks, g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
+                  g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
             else if (jcp.loop_order == loop_gnc)
                 nd_iterator_jump(start, end,
-                  g, jcp.ngroups, n, jcp.mb, occ, oc_chunks, oh_s, jcp.oh);
+                  g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
             else if (jcp.loop_order == loop_ngc)
                 nd_iterator_jump(start, end,
-                    n, jcp.mb, g, jcp.ngroups, occ, oc_chunks, oh_s, jcp.oh);
+                    n, jcp.mb, g, jcp.ngroups, oh_s, jcp.oh);
             else
                 assert(!"unsupported loop order");
         }
