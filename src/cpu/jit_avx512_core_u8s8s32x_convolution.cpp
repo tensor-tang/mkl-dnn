@@ -60,6 +60,7 @@ execute_forward()
     assert(jcp.nb_oc % jcp.nb_oc_blocking == 0);
 
     const auto &oscales = conf_.attr()->output_scales_;
+    auto scales1x1 = &oscales.scales_[0];
 
 #   pragma omp parallel
     {
@@ -75,13 +76,16 @@ execute_forward()
         jit_conv_call_s p = { 0 };
 
         auto ws_l = ws_ + ithr * ws_per_thread_;
+        auto ws1x1_l = ws1x1_ + ithr * ws1x1_per_thread_;
 
-        size_t src_h_stride = src_d.blk_off(0, 0, 1);
-        size_t dst_h_stride = dst_d.blk_off(0, 0, 1);
+        size_t src_h_stride = src_d.blk_off(0, 0, 1);  // n, g, h, w, c
+        //size_t dst_h_stride = dst_d.blk_off(0, 0, 1);
+        size_t out1x1_h_stride = jcp.oc1x1 * jcp.oh;
+        //printf("%d\n", dst_h_stride);
         size_t wht_h_stride = wht_blk_off(weights_d, 0, 0, 0, 1);
         size_t wht_ic_stride = wht_blk_off(weights_d, 0, 0, 1);
 
-        int n{0}, g{0}, occ{0}, oh_s{0};
+        int n{0}, g{0}, oh_s{0};
         if (jcp.loop_order == loop_cgn)
             nd_iterator_init(start,
                 g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
@@ -93,11 +97,14 @@ execute_forward()
                 n, jcp.mb, g, jcp.ngroups, oh_s, jcp.oh);
         else
             assert(!"unsupported loop order");
+
         while (start < end) {
           for (int occ = 0; occ < oc_chunks; ++occ) {
             int ocb = occ * jcp.nb_oc_blocking;
-            int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
+            auto ws1x1_c = ws1x1_l + ocb * jcp.ow * jcp.oc1x1_block;  // format is (oc1x1/16, ow, 16o)
+            auto wei1x1_c = wei1x1_ + ocb * 4 * 64; // format: oc1x1/16,ic1x1/4, 16o,4i
 
+            int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
             int g_ic = g * jcp.nb_ic * jcp.oc_block;
 
             int work_rem = end - start;
@@ -106,15 +113,18 @@ execute_forward()
 
             auto bias_w = bias ? bias + (bias_d.blk_off(g_oc) * bia_dt_size) : 0;
 
-            auto dst_w = dst + dst_d.blk_off(n, g_oc, oh_s);
+            //auto dst_w = dst + dst_d.blk_off(n, g_oc, oh_s);
+            auto out1x1_w = out1x1_ + n*(jcp.oh*wht_h_stride) + oh_s*wht_h_stride;  // nhwc
+
             auto src_w = src + src_d.blk_off(n, g_ic, ih_s);
             auto wht_w = weights + wht_blk_off(weights_d, g, ocb, 0);
 
             auto scales = &oscales.scales_[jcp.is_oc_scale * g_oc];
-
+//printf("%d, %f\n", jcp.is_oc_scale, scales);
             for (int icc = 0; icc < ic_chunks; ++icc) {
                 auto src_c = src_w;
-                auto dst_c = dst_w;
+                // auto dst_c = dst_w;
+                auto out1x1_c = out1x1_w;;
                 auto ws_c = ws_l;
 
                 int icb = icc * jcp.nb_ic_blocking;
@@ -128,18 +138,24 @@ execute_forward()
                         jcp.kh - i_t_overflow - i_b_overflow);
 
                     p.src = src_c + i_t_overflow * src_h_stride;
-                    p.dst = dst_c;
-                    p.filt = wht_w + i_t_overflow * wht_h_stride;
+//                    p.dst = dst_c;                    p.filt = wht_w + i_t_overflow * wht_h_stride;
                     p.bias = bias_w;
                     p.acc_s32 = ws_c;
                     p.channel = icb;
                     p.kh_padding = kh_padding;
                     p.scales = scales;
+                    p.ocb3x3 = ocb;
+                    p.wei1x1 = wei1x1_c; // oc1x1/16,ic1x1/4, 16o,4i
+                    p.bia1x1 = bia1x1_;   // bias1x1 only support s32 yet
+                    p.acc1x1 = ws1x1_c;  // acc1x1 should be offset, format is (oc1x1/16, ow, 16o)
+                    p.out1x1 = out1x1_c; // shoud have ow offset in count
+                    p.scales1x1 = scales1x1;  // only use one as 3x3 scale, should be fine 
 
                     kernel_->jit_ker(&p);
 
                     src_c += src_h_stride * jcp.stride_h;
-                    dst_c += dst_h_stride;
+//                    dst_c += dst_h_stride;
+                    out1x1_c += out1x1_h_stride;
                     ws_c += jcp.ow * jcp.oc_block * jcp.nb_oc_blocking;
                 }
                 src_w += jcp.ic_block * jcp.nb_ic_blocking;

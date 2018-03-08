@@ -93,6 +93,94 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_output(int ur_w)
     L(l_ret);
 }
 
+void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_1x1output(int ur_w)
+{
+    Label l_first_load, l_ret;
+    mov(reg_ocb3x3, ptr[param1 + GET_OFF(ocb3x3)]);
+    cmp(reg_ocb3x3, 0); // FISRT load
+    je(l_first_load, T_NEAR);
+
+    for (int j = 0; j < ur_w; j++) {
+      Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+      int offset = jcp.typesize_acc * j * jcp.oc1x1_block;  // acc1x1 format is (oc1x1/16, ow, 16o)
+      vmovups(zmm, EVEX_compress_addr(reg_ptr_acc1x1, offset));
+    }
+    jmp(l_ret, T_NEAR);
+
+    L(l_first_load);
+    for (int j = 0; j < ur_w; j++) {
+      Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+      vpxord(zmm, zmm, zmm);
+    }
+
+    L(l_ret);
+}
+
+void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
+{
+  // ocb1x1 is only for bias now
+
+  Label l_update_acc, l_ret;;
+  mov(reg_ocb3x3, ptr[param1 + GET_OFF(ocb3x3)]);
+  int adjusment = jcp.nb_oc1x1 - 1;
+  cmp(reg_ocb3x3, adjusment); // LAST channel
+  jl(l_update_acc, T_NEAR);
+
+  // prepare bias
+  mov(reg_ptr_bia1x1, ptr[param1 + GET_OFF(bia1x1)]);
+  mov(reg_ptr_scales1x1, ptr[param1 + GET_OFF(scales1x1)]);
+  int scale_offset = 0; // jcp.is_oc_scale * (sizeof(float) * ocb1x1 * jcp.oc1x1_block);
+
+  auto zmm_bias = zmm_tmp;
+  if (jcp.with_bias) {
+      int bias_offset = jcp.typesize_bia * ocb1x1* jcp.oc1x1_block;
+      auto bias_addr = EVEX_compress_addr(reg_ptr_bia1x1, bias_offset);
+      switch (jcp.bia_dt) {
+      case data_type::f32:
+      case data_type::s32: vmovups(zmm_bias, bias_addr); break;
+      case data_type::s8: vpmovsxbd(zmm_bias, bias_addr); break;
+      case data_type::u8: vpmovzxbd(zmm_bias, bias_addr); break;
+      default: assert(!"unsupported dst data type");
+      }
+      if (jcp.bia_dt != data_type::f32)
+          vcvtdq2ps(zmm_bias, zmm_bias);
+  }
+
+  vpxord(zmm_zero, zmm_zero, zmm_zero);
+  for (int jw = 0; jw < ur_w; jw++) {
+    Zmm zmm = zmm_1x1out(jw, jcp.nb_oc_blocking);
+    Xmm xmm = xmm_1x1out(jw, jcp.nb_oc_blocking);
+
+    vcvtdq2ps(zmm, zmm);
+    if (jcp.with_bias)
+        vaddps(zmm, zmm, zmm_bias);
+    vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales1x1, scale_offset)); 
+    // out format is nhw,c/16,16o
+    int offset = jcp.typesize_acc * jw * jcp.oc1x1;
+    auto addr = EVEX_compress_addr(reg_ptr_out1x1, offset);
+
+    // relu
+    vmaxps(zmm, zmm_zero, zmm);
+
+    switch (jcp.dst_dt) {
+      case data_type::f32:
+      case data_type::s32: vmovups(addr, zmm); break;
+      case data_type::s8: vpmovsdb(xmm, zmm); vmovups(addr, xmm); break;
+      case data_type::u8: vpmovusdb(xmm, zmm); vmovups(addr, xmm); break;
+      default: assert(!"unknown dst_dt");
+      }
+  }
+  jmp(l_ret, T_NEAR);
+
+  L(l_update_acc);
+  for (int j = 0; j < ur_w; j++) {
+    Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+    int offset = jcp.typesize_acc * j * jcp.oc1x1_block;  // acc1x1 format is (oc1x1/16, ow, 16o)
+    vmovups(EVEX_compress_addr(reg_ptr_acc1x1, offset), zmm);
+  }
+  L(l_ret);
+}
+
 void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
 {
     Label l_update_acc, l_ret;
@@ -137,7 +225,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             int aux_output_offset
                 = jcp.typesize_out * (k * jcp.oc_block
                                         + j * jcp.oc * jcp.ngroups);
-            auto addr = EVEX_compress_addr(reg_out, aux_output_offset);
+            // auto addr = EVEX_compress_addr(reg_out, aux_output_offset);
 
             Xmm xmm = xmm_out(j, k);
             Zmm zmm = zmm_out(j, k);
@@ -147,7 +235,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales, scale_offset));
             if (maybe_relu(0))
                 vmaxps(zmm, zmm_zero, zmm);
-            if (p_sum_scale) { // post_op: sum
+            /*if (p_sum_scale) { // post_op: sum
                 auto zmm_prev_dst = zmm_bcast;
                 switch (jcp.dst_dt) {
                 case data_type::f32:
@@ -162,7 +250,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                     vaddps(zmm, zmm_prev_dst);
                 else
                     vfmadd231ps(zmm, zmm_prev_dst, zword_b[reg_ptr_sum_scale]);
-            }
+            }*/
             if (maybe_relu(1))
                 vmaxps(zmm, zmm_zero, zmm);
 
@@ -174,6 +262,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                 else
                     assert(!"unimplemented");
             }
+            /*
             switch (jcp.dst_dt) {
             case data_type::f32:
             case data_type::s32: vmovups(addr, zmm); break;
@@ -181,7 +270,56 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             case data_type::u8: vpmovusdb(xmm, zmm); vmovups(addr, xmm); break;
             default: assert(!"unknown dst_dt");
             }
+            */
         }
+    }
+
+    ///////////////// conv 1x1 /////////////////////////////////////////
+    // this lamda function should be the same with compute_loop
+    auto compute = [=](Zmm vreg_acc, Zmm vreg_wei, Zmm vreg_src) {
+        if (jcp.ver == ver_vnni) {
+            vpdpbusd(vreg_acc, vreg_src, vreg_wei);
+        } else {
+            vpmaddubsw(zmm_tmp, vreg_src, vreg_wei);
+            vpmaddwd(zmm_tmp, zmm_tmp, zmm_one);
+            vpaddd(vreg_acc, vreg_acc, zmm_tmp);
+        }
+    };
+    int oc_block = jcp.oc_block;
+    int nb_oc_block = jcp.nb_oc_blocking;
+
+    // reg sum_scale, scales, bias, channel are avaible now
+    mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);
+    mov(reg_ptr_acc1x1, ptr[param1 + GET_OFF(acc1x1)]);
+    mov(reg_ptr_out1x1, ptr[param1 + GET_OFF(out1x1)]);
+    int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
+    int out1x1_shift = jcp.typesize_out * jcp.oc1x1_block;  // out format is nhw,c/16,16o
+    // compute all oc3x3 for all ur_w
+    for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
+      prepare_1x1output(ur_w);
+      // compute 16o of 1x1conv for all ur_w
+      for (int k = 0; k < nb_oc_block; ++k) {
+        for (int i4 = 0; i4 < oc_block / 4; ++i4) {
+          // load 1x1 wei: 16o4i *s8 at (oc1x1_idx, ic1x1/4)
+          // [oc/16][ic/4][16o][4i]
+          int wei_offset = jcp.typesize_in * (oc1x1_idx * jcp.oc * jcp.oc_block + (i4 + k *4) * 64);
+          vmovups(zmm_1x1_wei, EVEX_compress_addr(reg_ptr_wei1x1, wei_offset));
+          for (int jw = 0; jw < ur_w; ++jw) {
+            if (i4 == 0 ) {
+              movd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
+            }
+            else {
+              pextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
+            }
+            vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
+            compute(zmm_1x1out(jw, nb_oc_block), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
+          }
+        }
+      }
+      
+      store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
+      add(reg_ptr_acc1x1, acc1x1_shift);
+      add(reg_ptr_out1x1, out1x1_shift); // out format is nhw,c/16,16o
     }
     jmp(l_ret, T_NEAR);
 
@@ -287,8 +425,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         * jcp.ic * jcp.ngroups;
     int inp_shift = jcp.typesize_in *
                         (jcp.ur_w * jcp.stride_w * jcp.ic * jcp.ngroups);
-    int out_shift = jcp.typesize_out *
-                        (jcp.ur_w * jcp.oc * jcp.ngroups);
+    // int out_shift = jcp.typesize_out * (jcp.ur_w * jcp.oc * jcp.ngroups);
     int acc_shift = jcp.typesize_acc *
                         (jcp.ur_w * jcp.oc_block * jcp.nb_oc_blocking);
 
@@ -300,8 +437,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
     vpbroadcastw(zmm_one, _t);
 
     mov(reg_inp, ptr[param1 + GET_OFF(src)]);
-    mov(reg_out, ptr[param1 + GET_OFF(dst)]);
-    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
+    // mov(reg_out, ptr[param1 + GET_OFF(dst)]);    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
     mov(reg_kh, ptr[param1 + GET_OFF(kh_padding)]);
     mov(reg_acc_s32, ptr[param1 + GET_OFF(acc_s32)]);
 
@@ -319,7 +455,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         if (n_oi == 0) {
             compute_loop(jcp.ur_w, jcp.l_pad, r_pad1);
             add(reg_inp, inp_shift_pad);
-            add(reg_out, out_shift);
+            // add(reg_out, out_shift);
             add(reg_acc_s32, acc_shift);
             if (jcp.ur_w_tail != 0) {
                 compute_loop(jcp.ur_w_tail, 0, r_pad);
@@ -328,7 +464,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (jcp.l_pad > 0) {
                 compute_loop(jcp.ur_w, jcp.l_pad, 0);
                 add(reg_inp, inp_shift_pad);
-                add(reg_out, out_shift);
+                // add(reg_out, out_shift);
                 add(reg_acc_s32, acc_shift);
 
                 inc(reg_oi);
@@ -340,7 +476,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
                 L(ow_loop_label); {
                     compute_loop(jcp.ur_w, 0, 0);
                     add(reg_inp, inp_shift);
-                    add(reg_out, out_shift);
+                    // add(reg_out, out_shift);
                     add(reg_acc_s32, acc_shift);
 
                     inc(reg_oi);
@@ -351,7 +487,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (r_pad1 > 0) {
                 compute_loop(jcp.ur_w, 0, r_pad1);
                 add(reg_inp, inp_shift);
-                add(reg_out, out_shift);
+                // add(reg_out, out_shift);
                 add(reg_acc_s32, acc_shift);
             }
             if (jcp.ur_w_tail != 0) {
@@ -445,6 +581,17 @@ status_t jit_avx512_core_u8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
     jcp.oc_block = 16;
     jcp.ic_block = 16;
     if (jcp.ic % jcp.ic_block != 0) {
+        return status::unimplemented;
+    }
+
+    // conv 1x1
+    if (jcp.oc_block % 4 != 0) {
+        return status::unimplemented;
+    }
+    jcp.oc1x1 = 96; // should get from outside
+    jcp.oc1x1_block = 16;
+    jcp.nb_oc1x1 = jcp.oc1x1 / jcp.oc1x1_block;
+    if (jcp.oc1x1 % jcp.oc1x1_block != 0) {
         return status::unimplemented;
     }
 

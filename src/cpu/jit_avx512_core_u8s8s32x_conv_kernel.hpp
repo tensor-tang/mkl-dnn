@@ -56,6 +56,7 @@ struct jit_avx512_core_u8s8s32x_fwd_kernel : public jit_generator {
 
 private:
     using reg64_t = const Xbyak::Reg64;
+    using reg32_t = const Xbyak::Reg32;
     using zmm_t = const Xbyak::Zmm;
     using xmm_t = const Xbyak::Xmm;
     enum {
@@ -65,7 +66,7 @@ private:
 
     reg64_t reg_inp = r8;
     reg64_t reg_ker = r9;
-    reg64_t reg_out = r10;
+    // reg64_t reg_out = r10;  // do not need 3x3 out
     reg64_t aux_reg_inp = r11;
     reg64_t reg_ptr_sum_scale = r11;
     reg64_t aux_reg_ker = r12;
@@ -88,6 +89,18 @@ private:
     zmm_t zmm_zero = zmm_t(31);
     zmm_t zmm_wei = zmm_t(31);
 
+    // for conv 1x1
+    reg64_t reg_ptr_out1x1 = r10;  // replace gre out
+    reg64_t reg_ptr_acc1x1 = r12;  // use aux_reg_ker, used only in compute_loop
+    reg64_t reg_ptr_bia1x1 = rdx;  // use reg_bias, can use channel reg either i think
+    reg64_t reg_ptr_wei1x1 = r11;  // used reg_ptr_sum_scale reg
+    reg64_t reg_ocb3x3 = r15;  // use reg_channel
+    reg64_t reg_ptr_scales1x1 = rax;  // use reg_ptr_scales
+    reg32_t reg_1x1_src_4u8 = r15d;  // use reg_channel reg
+
+    zmm_t zmm_1x1_src_bcast_u8 = zmm_t(31);  // use use zero zmm
+    zmm_t zmm_1x1_wei = zmm_t(30);  // use zmm_bcast zmm 
+
     zmm_t zmm_out(int i_ur, int i_oc) {
         int idx = i_ur + i_oc * jcp.ur_w;
         assert(idx < ker_reg_base_idx);
@@ -103,6 +116,17 @@ private:
         assert(idx < 31);
         return zmm_t(idx);
     }
+    // 1x1 acc use 3x3 input. size is ur_w * zmm
+    // range: (0~ur_w, jcp.nb_oc_blocking)
+    #define zmm_1x1out zmm_inp
+    
+    // just change zmm to xmm. should keep the same with zmm_inp
+    xmm_t xmm_1x1out(int i_ic, int nb_x_blocking) {
+        int idx = i_ic + nb_x_blocking * jcp.ur_w;
+        assert(idx < 31);
+        return xmm_t(idx);
+    }
+
     int get_ow_start(int ki, int pad_l) {
         return nstl::max(0, (pad_l - ki + jcp.stride_w - 1) / jcp.stride_w);
     }
@@ -113,6 +137,8 @@ private:
     bool maybe_relu(int position);
     void prepare_output(int ur_w);
     void store_output(int ur_w);
+    void prepare_1x1output(int ur_w);
+    void store_1x1output(int ur_w, int ocb1x1);
     void compute_loop(int ur_w, int pad_l, int pad_r);
     void generate();
 };

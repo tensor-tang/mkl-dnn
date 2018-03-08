@@ -96,6 +96,10 @@ struct jit_conv_conf_t {
     bool expl_bcast;
     bool large_spatial;
     int is_oc_scale;
+    /* conv 1x1*/
+    int oc1x1;
+    int oc1x1_block;
+    int nb_oc1x1;
 };
 
 /*
@@ -181,12 +185,18 @@ struct jit_conv_call_s {
     const void *bias_prf;
     const void *scales;
     const void *acc_s32;
+    const void *wei1x1;
+    const void *bia1x1;
+    const void *acc1x1;
+    const void *out1x1;
+    const void *scales1x1;
     size_t kh_padding;
     size_t kh_padding_prf;
     size_t kw_padding;
     size_t channel;
     size_t channel_prf;
     size_t oc_blocks;
+    size_t ocb3x3;
     int flags;
 };
 
