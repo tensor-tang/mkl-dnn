@@ -131,6 +131,173 @@ using u8 = uint8_t;
 using s8 = int8_t;
 using s32 = int32_t;
 
+template<typename dtype>
+void fscanf_data(FILE* fp, dtype* pdata) {
+  printf("Error: unkown data type\n");
+}
+
+template<>
+void fscanf_data<u8>(FILE* fp, u8* pdata) {
+  int res = fscanf(fp, "%hhu,", pdata);
+}
+
+template<>
+void fscanf_data<s8>(FILE* fp, s8* pdata) {
+  s32 tmp32 = 0;
+  int res = fscanf(fp, "%d,", &tmp32);
+  *pdata = static_cast<s8>(tmp32);
+}
+
+template<>
+void fscanf_data<s32>(FILE* fp, s32* pdata) {
+  int res = fscanf(fp, "%d,", pdata);
+}
+
+template<typename dtype>
+static void load_nhwc(const char* filename, dtype* pdata, const int bs, const int height,
+  const int width, const int channel) {
+  FILE *fp = NULL;
+  fp = fopen(filename, "r");
+  if (fp == NULL) {
+    printf("Error: no such file %s\n", filename);
+  }
+  for (int n = 0; n < bs; ++n) {
+    for (int h = 0; h < height; ++h) {
+      for (int w = 0; w < width; ++w) {
+        for (int c = 0; c < channel; ++c) {
+          int offset = c + w*channel + h*width*channel + n*height*width*channel;
+          fscanf_data<dtype>(fp, pdata + offset);
+        }
+        int res = fscanf(fp, "\n");
+      }
+    }
+  }
+  fclose(fp);
+}
+
+template<typename dtype>
+static void load_x(const char* filename, dtype* pdata, const size_t size) {
+  FILE *fp = NULL;\
+  fp = fopen(filename, "r");
+  if (fp == NULL) {
+    printf("Error: no such file %s\n", filename);
+  }
+  for (size_t i = 0; i < size; ++i) {
+     fscanf_data<dtype>(fp, pdata + i);
+  }
+  fclose(fp);
+}
+
+template<typename dtype>
+static void save_nhwc(const char* filename, dtype* pdata, const int bs, const int height,
+  const int width, const int channel) {
+  FILE *fp = NULL;\
+  fp = fopen(filename, "w");
+  for (int n = 0; n < bs; ++n) {
+    for (int h = 0; h < height; ++h) {
+      for (int w = 0; w < width; ++w) {
+        for (int c = 0; c < channel; ++c) {
+          fprintf(fp, "%d,", pdata[c + w*channel + h*width*channel + n*height*width*channel]);
+        }
+        fprintf(fp, "\n");
+      }
+    }
+  }
+  fclose(fp);
+}
+
+template<typename dtype>
+static void save_x(const char* filename, dtype* pdata, const size_t size) {
+  FILE *fp = NULL;\
+  fp = fopen(filename, "w");
+  for (size_t i = 0; i < size; ++i) {
+     fprintf(fp, "%d,", pdata[i]);
+  }
+  fclose(fp);
+}
+
+// return 0 if success
+template<typename dtype>
+static int compare(dtype* p1, dtype* p2, const size_t sz) {
+  for (size_t i = 0; i < sz; ++i) {
+    if (p1[i] != p2[i]) { return -1;}
+  }
+  return 0;
+}
+
+// save should be always right, so only test load function
+void test_load_data(test_convolution_sizes_t* cds) {
+  for (int i = 0; i < 4; ++i) {
+    auto& p = cds[i];
+    std::string filename;
+    // check src
+    filename = "src_";
+    filename += std::to_string(i);
+    filename += ".txt";
+    std::cout << filename << std::endl;
+    size_t sz = p.mb * p.ih * p.iw * p.ic;
+    u8* psrc1 = (u8 *)malloc(sz * sizeof(u8));
+    u8* psrc2 = (u8 *)malloc(sz * sizeof(u8));
+    load_nhwc<u8>(filename.c_str(), psrc1, p.mb, p.ih, p.iw, p.ic);
+    filename += ".tmp";
+    save_nhwc<u8>(filename.c_str(), psrc1, p.mb, p.ih, p.iw, p.ic);
+    load_nhwc<u8>(filename.c_str(), psrc2, p.mb, p.ih, p.iw, p.ic);
+    if (compare<u8>(psrc1, psrc2, sz) != 0) {
+      printf("Test failed: load src!\n");
+      break;
+    }
+    printf("Pass\n");
+    free(psrc1);
+    free(psrc2);
+
+    for (std::string s1x1 : {"", "1x1"}) {
+    // check wei
+    filename = "wei";
+    filename += s1x1;
+    filename += "_";
+    filename += std::to_string(i);
+    filename += ".txt";
+    std::cout << filename << std::endl;
+    sz = p.oc * p.ic * p.kh * p.kw;
+    s8* pwei1 = (s8 *)malloc(sz * sizeof(s8));
+    s8* pwei2 = (s8 *)malloc(sz * sizeof(s8));
+    load_x<s8>(filename.c_str(), pwei1, sz);
+    filename += ".tmp";
+    save_x<s8>(filename.c_str(), pwei1, sz);
+    load_x<s8>(filename.c_str(), pwei2, sz);
+    if (compare<s8>(pwei1, pwei2, sz) != 0) {
+      printf("Test failed: load wei!\n");
+      break;
+    }
+    printf("Pass\n");
+    free(pwei1);
+    free(pwei2);
+    
+    // check bias
+    filename = "bia";
+    filename += s1x1;
+    filename += "_";
+    filename += std::to_string(i);
+    filename += ".txt";
+    std::cout << filename << std::endl;
+    sz = p.oc;
+    s32* pbia1 = (s32 *)malloc(sz * sizeof(s32));
+    s32* pbia2 = (s32 *)malloc(sz * sizeof(s32));
+    load_x<s32>(filename.c_str(), pbia1, sz);
+    filename += ".tmp";
+    save_x<s32>(filename.c_str(), pbia1, sz);
+    load_x<s32>(filename.c_str(), pbia2, sz);
+    if (compare<s32>(pbia1, pbia2, sz) != 0) {
+      printf("Test failed: load bias!\n");
+      break;
+    }
+    printf("Pass\n");
+    free(pbia1);
+    free(pbia2);
+    }
+  }
+}
+
 std::unique_ptr<convolution_forward::desc> get_conv_desc(
     const test_convolution_sizes_t& cd, bool with_bias, memory::data_type data_type_dst = data_traits<s32>::data_type) {
   // dtype
@@ -364,7 +531,7 @@ void test_conv3x3_1x1(test_convolution_sizes_t cd, bool with_bias = true) {
 }
 
 static void usage() {
-  std::cout << "./test_fuse function(3x3/1x1/reorder) buring_iter(1~1000) valid_iter(1~1000) test_case_idx(0/1/2) option(0/1)"<< std::endl;
+  std::cout << "./test_fuse function(3x3/1x1/reorder/test_load_data) buring_iter(1~1000) valid_iter(1~1000) test_case_idx(0/1/2) option(0/1)"<< std::endl;
   std::cout << "function: \n 3x3: conv_relu or conv+relu \n 1x1: conv3x3_relu+conv1x1_relu" << std::endl;
   std::cout << "buring_iter: \n defalut is 10 \nvalid_iter: default is 10" << std::endl;
   std::cout << "test_case_idx: \n default is 2 \n" << std::endl;
@@ -385,7 +552,7 @@ int main(int argc, char **argv) {
     if (argc >= 2) {
       std::string in(argv[1]);
       func_option = in;
-      CHECK(in == "3x3" || in == "1x1" || in == "reorder");
+      CHECK(in == "3x3" || in == "1x1" || in == "reorder" || in == "test_load_data");
     }
     if (func_option == "reorder" && argc >= 3) {
       std::cout << "Warnning: \" " << argv[2] <<
@@ -417,7 +584,7 @@ int main(int argc, char **argv) {
         with_bias = res;
       } 
     }
-    
+
     // conv desc
     test_convolution_sizes_t cds[] = {
       { // small one
@@ -453,6 +620,7 @@ int main(int argc, char **argv) {
         1, 1   // sh, sw
       }
     };
+
     auto &pm = cds[test_case_idx];
     printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
       pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
@@ -461,6 +629,8 @@ int main(int argc, char **argv) {
           test_conv(cds[test_case_idx], with_fuse);
         } else if (func_option == "1x1") {  // 3x3_relu_1x1_relu
           test_conv3x3_1x1(cds[test_case_idx], with_bias);
+        } else if (func_option == "test_load_data") {
+          test_load_data(cds);
         } else {  // reoder
           test_reorder();
         }
