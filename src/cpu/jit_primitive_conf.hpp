@@ -328,6 +328,15 @@ struct jit_pool_call_s {
     float ker_area_h;
 };
 
+struct jit_concat_call_s {
+    const void *src;
+    const void *dst;
+};
+
+struct jit_concat_conf_t {
+    int bs;
+    int ih, iw;
+};
 
 }
 }
