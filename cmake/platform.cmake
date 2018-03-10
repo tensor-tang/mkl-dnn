@@ -33,6 +33,11 @@ if(ENABLE_VNNI)
     add_definitions(-DENABLE_VNNI)
 endif()
 
+option(LOAD_SAVE_DATA "Enable Load and save data." ON)
+if(LOAD_SAVE_DATA)
+    add_definitions(-DLOAD_SAVE_DATA)
+endif()
+
 option(MKLDNN_VERBOSE
     "allows Intel(R) MKL-DNN be verbose whenever MKLDNN_VERBOSE
     environment variable set to 1" ON) # enabled by default

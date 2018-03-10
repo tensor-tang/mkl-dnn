@@ -384,158 +384,338 @@ std::unique_ptr<eltwise_forward::primitive_desc> get_relu_pd(const memory::desc 
       new eltwise_forward::primitive_desc(relu_desc, eng));
 }
 
-void test_conv(const test_convolution_sizes_t& cd, bool with_fuse = true, bool with_bias = true) {
-    std::vector<primitive> pipeline;
-    std::unique_ptr<primitive> fwd;
-    std::unique_ptr<primitive> fwd_relu;
-    std::unique_ptr<convolution_forward::desc> conv_desc;
-    std::unique_ptr<convolution_forward::primitive_desc> conv_pd;
-    std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
-    std::unique_ptr<memory> src, wgt, dst, bia;
+void test_conv(const std::string& type, test_convolution_sizes_t* cds,
+  const int id, bool with_relu, bool fuse_relu = true, bool with_bias = true) {
+  test_convolution_sizes_t cd = cds[id];
+  std::vector<primitive> pipeline;
+  std::unique_ptr<primitive> fwd;
+  std::unique_ptr<primitive> fwd_relu;
+  std::unique_ptr<convolution_forward::desc> conv_desc;
+  std::unique_ptr<convolution_forward::primitive_desc> conv_pd;
+  std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
+  std::unique_ptr<memory> src, wgt, dst, bia;
 
-    conv_desc = get_conv_desc(cd, with_bias);
-    conv_pd = get_conv_pd(conv_desc, with_fuse);
-    src.reset(new memory(conv_pd->src_primitive_desc()));
-    wgt.reset(new memory(conv_pd->weights_primitive_desc()));
-    dst.reset(new memory(conv_pd->dst_primitive_desc()));
-    if (with_bias) {
-      bia.reset(new memory(conv_pd->bias_primitive_desc()));
-    }
-    if (with_bias) {
-      fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *bia, *dst));
-    } else {
-      fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *dst));
-    }
-    pipeline.push_back(*fwd);
-
-    if (!with_fuse) {  // without fusion
-      // add relu
-      relu_pd = get_relu_pd(conv_pd->dst_primitive_desc().desc());
-      fwd_relu.reset(new eltwise_forward(*relu_pd, *dst, *dst));
-      pipeline.push_back(*fwd_relu);
-    }
-
-    for (auto i = 0; i < burning_iter; ++i) {
-      stream(stream::kind::eager).submit(pipeline).wait();
-    }
-
-    auto get_current_ms = []() -> double {
-      struct timeval time;
-      gettimeofday(&time, NULL);
-      return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
-    };
-
-    auto t_start = get_current_ms();
-    for (auto i = 0; i < iter; ++i) {
-      stream(stream::kind::eager).submit(pipeline).wait();
-    }
-    auto t_stop = get_current_ms();
-
-    std::cout << "Conv Relu ";
-    if (with_fuse) {
-      std::cout << "Fused ";
-    } else {
-      std::cout << "No Fused ";
-    }
-
-#ifdef ENABLE_VNNI
-    std::cout << "with VNNI ";
-#else
-    std::cout << "without VNNI ";
-#endif
-
-    std::cout << "avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
-}
-
-
-// test conv3x3_relu + conv1x1_relu
-// u8 (wei:s8, bia:s32) => relu => u8, (wei:s8, bia:s32) => s32
-void test_conv3x3_1x1(test_convolution_sizes_t cd, bool with_bias = true) {
-    std::unique_ptr<primitive> fwd3x3, fwd1x1;
-    std::vector<primitive> pp3x3, pp1x1;  // pipeline
-    std::unique_ptr<memory> src, wgt3x3, dst3x3, bia3x3, wgt1x1, bia1x1, dst;
-
-    std::unique_ptr<convolution_forward::desc> desc3x3, desc1x1;
-    std::unique_ptr<convolution_forward::primitive_desc> pd3x3, pd1x1;
-
-    desc3x3 = get_conv_desc(cd, with_bias, data_traits<u8>::data_type);
+  if (type == "1x1") {
+    // always change the params, the output used as input
     cd.ic = cd.oc; cd.ih = cd.oh; cd.iw = cd.ow;
     cd.oc = 96;
     cd.kh = 1; cd.kw = 1;
     cd.padh = 0; cd.padw = 0;
-    desc1x1 = get_conv_desc(cd, with_bias, data_traits<s32>::data_type);
+  }
+  conv_desc = get_conv_desc(cd, with_bias);
+  conv_pd = get_conv_pd(conv_desc, with_relu && fuse_relu);
+  src.reset(new memory(conv_pd->src_primitive_desc()));
+  wgt.reset(new memory(conv_pd->weights_primitive_desc()));
+  dst.reset(new memory(conv_pd->dst_primitive_desc()));
 
-    pd3x3 = get_conv_pd(desc3x3, true);
-    pd1x1 = get_conv_pd(desc1x1, true);
-
-    src.reset(new memory(pd3x3->src_primitive_desc()));
-    wgt3x3.reset(new memory(pd3x3->weights_primitive_desc()));
-    wgt1x1.reset(new memory(pd1x1->weights_primitive_desc()));
-    dst3x3.reset(new memory(pd3x3->dst_primitive_desc()));
-    dst.reset(new memory(pd1x1->dst_primitive_desc()));
-    if (with_bias) {
-      bia3x3.reset(new memory(pd3x3->bias_primitive_desc()));
-      bia1x1.reset(new memory(pd1x1->bias_primitive_desc()));
-    }
-
-    if (with_bias) {
-      fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *bia3x3, *dst3x3));
-      fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *bia1x1, *dst));
-    } else {
-      fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *dst3x3));
-      fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *dst));
-    }
-    pp3x3.push_back(*fwd3x3);
-    pp1x1.push_back(*fwd1x1);
-
-    for (auto i = 0; i < burning_iter; ++i) {
-      stream(stream::kind::eager).submit(pp3x3).wait();
-      stream(stream::kind::eager).submit(pp1x1).wait();
-    }
-
-    auto get_current_ms = []() -> double {
-      struct timeval time;
-      gettimeofday(&time, NULL);
-      return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
-    };
-
-    auto t_start = get_current_ms();
-    double sum3x3 = 0;
-    double sum1x1 = 0;
-    
-    for (auto i = 0; i < iter; ++i) {
-      auto s1 = get_current_ms();
-      stream(stream::kind::eager).submit(pp3x3).wait();
-      auto s2 = get_current_ms();
-      stream(stream::kind::eager).submit(pp1x1).wait();
-      auto s3 = get_current_ms();
-      sum3x3 += (s2 - s1);
-      sum1x1 += (s3 - s2);
-    }
-    auto t_stop = get_current_ms();
-
-    std::cout << "Conv3x3_Relu + Conv1x1_Relu ";
-    if (with_bias) {
-      std::cout << "with bias ";
-    } else {
-      std::cout << "without bias ";
-    }
-#ifdef ENABLE_VNNI
-    std::cout << "with VNNI ";
-#else
-    std::cout << "without VNNI ";
+  if (with_bias) {
+    bia.reset(new memory(conv_pd->bias_primitive_desc()));
+#ifdef LOAD_SAVE_DATA
+    // load data
+    s32* pbia = (s32*)(bia->get_data_handle());
+    std::string filename;
+    filename = "bia";
+    filename += (type == "1x1" ? "1x1" : "");
+    filename += "_";
+    filename += std::to_string(id);
+    filename += ".txt";
+    std::cout << "Load data " << filename << std::endl;
+    load_x<s32>(filename.c_str(), pbia, cd.oc);
 #endif
-    std::cout << "avg time ("
-    << sum3x3 / (double)iter << " + " << sum1x1 / (double)iter << "): "
-    << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+  }
+
+#ifdef LOAD_SAVE_DATA
+  std::string filename;
+  u8* psrc = (u8*)(src->get_data_handle());
+  s8* pwei = (s8*)(wgt->get_data_handle());
+  s32* pdst = (s32*)(dst->get_data_handle());
+
+  // load src data
+  // 1x1 src data is dst_relu_u8_i.txt
+  if (type == "1x1") {
+    filename = "dst_relu_u8_";
+  } else {
+    filename = "src_";
+  }
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Load data " << filename << std::endl;
+  load_nhwc<u8>(filename.c_str(), psrc, cd.mb, cd.ih, cd.iw, cd.ic);
+
+  // load wei data
+  filename = "wei";
+  filename += (type == "1x1" ? "1x1" : "");
+  filename += "_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Load data " << filename << std::endl;
+  load_x<s8>(filename.c_str(), pwei, cd.oc * cd.ic * cd.kh * cd.kw);
+#endif
+
+  if (with_bias) {
+    fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *bia, *dst));
+  } else {
+    fwd.reset(new convolution_forward(*conv_pd, *src, *wgt, *dst));
+  }
+  pipeline.push_back(*fwd);
+
+  if (with_relu && !fuse_relu) {
+    // add relu
+    relu_pd = get_relu_pd(conv_pd->dst_primitive_desc().desc());
+    fwd_relu.reset(new eltwise_forward(*relu_pd, *dst, *dst));
+    pipeline.push_back(*fwd_relu);
+  }
+#ifdef LOAD_SAVE_DATA
+  filename = "conv";
+  filename += type;
+  filename += (with_relu ? (fuse_relu ? "_relu_" : "+relu_") : "");
+  filename += "dst_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Save data " << filename << std::endl;
+  save_nhwc<s32>(filename.c_str(), pdst, cd.mb, cd.oh, cd.ow, cd.oc);
+#endif
+
+  for (auto i = 0; i < burning_iter; ++i) {
+    stream(stream::kind::eager).submit(pipeline).wait();
+  }
+
+  auto get_current_ms = []() -> double {
+    struct timeval time;
+    gettimeofday(&time, NULL);
+    return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
+  };
+
+  auto t_start = get_current_ms();
+  for (auto i = 0; i < iter; ++i) {
+    stream(stream::kind::eager).submit(pipeline).wait();
+  }
+  auto t_stop = get_current_ms();
+
+  std::cout << "Conv" << type;
+  if (with_relu) {
+    if (fuse_relu) {
+      std::cout << "_ReLU fused";
+    } else {
+      std::cout << "+ReLU non-fused";
+    }
+  }
+
+  if (with_bias) {
+    std::cout << " with bias";
+  } else {
+    std::cout << " without bias";
+  }
+
+#ifdef ENABLE_VNNI
+  std::cout << " with VNNI ";
+#else
+  std::cout << " without VNNI ";
+#endif
+
+  std::cout << "avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+}
+
+// test conv3x3_relu + conv1x1_relu
+// u8 (wei:s8, bia:s32) => relu => u8, (wei:s8, bia:s32) => s32
+void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
+    bool conv3x3_with_relu, bool conv1x1_with_relu,
+    bool fuse_3x3relu, bool fuse_1x1relu,
+    bool with_bias = true) {
+  test_convolution_sizes_t cd = cds[id];
+  std::unique_ptr<primitive> fwd3x3, fwd1x1;
+  std::vector<primitive> pp3x3, pp1x1;  // pipeline
+  std::unique_ptr<memory> src, wgt3x3, dst3x3, bia3x3, wgt1x1, bia1x1, dst;
+  std::unique_ptr<convolution_forward::desc> desc3x3, desc1x1;
+  std::unique_ptr<convolution_forward::primitive_desc> pd3x3, pd1x1;
+  std::unique_ptr<primitive> relu3x3, relu1x1;
+  std::unique_ptr<eltwise_forward::primitive_desc> relu3x3_pd, relu1x1_pd;
+
+  desc3x3 = get_conv_desc(cd, with_bias, data_traits<u8>::data_type);
+  pd3x3 = get_conv_pd(desc3x3, conv3x3_with_relu && fuse_3x3relu);
+  src.reset(new memory(pd3x3->src_primitive_desc()));
+  wgt3x3.reset(new memory(pd3x3->weights_primitive_desc()));
+  dst3x3.reset(new memory(pd3x3->dst_primitive_desc()));
+  if (with_bias) {
+    bia3x3.reset(new memory(pd3x3->bias_primitive_desc()));
+#ifdef LOAD_SAVE_DATA
+    // load bia3x3 data
+    std::string filename;
+    s32* pbia3x3 = (s32*)(bia3x3->get_data_handle());
+    filename = "bia_";
+    filename += std::to_string(id);
+    filename += ".txt";
+    std::cout << "Load data " << filename << std::endl;
+    load_x<s32>(filename.c_str(), pbia3x3, cd.oc);
+#endif
+  }
+#ifdef LOAD_SAVE_DATA
+  u8* psrc = (u8*)(src->get_data_handle());
+  s8* pwei3x3 = (s8*)(wgt3x3->get_data_handle());
+  u8* pdst3x3 = (u8*)(dst3x3->get_data_handle());
+  std::string filename;
+  // load src data
+  filename = "src_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Load data " << filename << std::endl;
+  load_nhwc<u8>(filename.c_str(), psrc, cd.mb, cd.ih, cd.iw, cd.ic);
+  
+  // load wei3x3 data
+  filename = "wei_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Load data " << filename << std::endl;
+  load_x<s8>(filename.c_str(), pwei3x3, cd.oc * cd.ic * cd.kh * cd.kw);
+#endif
+
+  // 1x1
+  cd.ic = cd.oc; cd.ih = cd.oh; cd.iw = cd.ow;
+  cd.oc = 96;
+  cd.kh = 1; cd.kw = 1;
+  cd.padh = 0; cd.padw = 0;
+  desc1x1 = get_conv_desc(cd, with_bias, data_traits<s32>::data_type);
+  pd1x1 = get_conv_pd(desc1x1, conv1x1_with_relu && fuse_1x1relu);
+  wgt1x1.reset(new memory(pd1x1->weights_primitive_desc()));
+  dst.reset(new memory(pd1x1->dst_primitive_desc()));
+  if (with_bias) {
+    bia1x1.reset(new memory(pd1x1->bias_primitive_desc()));
+#ifdef LOAD_SAVE_DATA
+    std::string filename;
+    s32* pbia1x1 = (s32*)(bia1x1->get_data_handle());
+    // load bia1x1 data
+    filename = "bia1x1_";
+    filename += std::to_string(id);
+    filename += ".txt";
+    std::cout << "Load data " << filename << std::endl;
+    load_x<s32>(filename.c_str(), pbia1x1, cd.oc);
+#endif
+  }
+  
+#ifdef LOAD_SAVE_DATA
+  s8* pwei1x1 = (s8*)(wgt1x1->get_data_handle());
+  s32* pdst1x1 = (s32*)(dst->get_data_handle());
+  // load wei1x1 data
+  filename = "wei1x1_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Load data " << filename << std::endl;
+  load_x<s8>(filename.c_str(), pwei1x1, cd.oc * cd.ic * cd.kh * cd.kw);
+#endif
+
+  if (with_bias) {
+    fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *bia3x3, *dst3x3));
+    fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *bia1x1, *dst));
+  } else {
+    fwd3x3.reset(new convolution_forward(*pd3x3, *src, *wgt3x3, *dst3x3));
+    fwd1x1.reset(new convolution_forward(*pd1x1, *dst3x3, *wgt1x1, *dst));
+  }
+  pp3x3.push_back(*fwd3x3);
+  pp1x1.push_back(*fwd1x1);
+
+  if (conv3x3_with_relu && !fuse_3x3relu) {
+    // add 3x3relu
+    relu3x3_pd = get_relu_pd(pd3x3->dst_primitive_desc().desc());
+    relu3x3.reset(new eltwise_forward(*relu3x3_pd, *dst3x3, *dst3x3));
+    pp3x3.push_back(*relu3x3);
+  }
+  if (conv1x1_with_relu && !fuse_1x1relu) {
+    // add 1x1relu
+    relu1x1_pd = get_relu_pd(pd1x1->dst_primitive_desc().desc());
+    relu1x1.reset(new eltwise_forward(*relu1x1_pd, *dst, *dst));
+    pp1x1.push_back(*relu1x1);
+  }
+
+#ifdef LOAD_SAVE_DATA
+  // save 3x3 relu intermated data, this data is u8 type
+  stream(stream::kind::eager).submit(pp3x3).wait();
+  filename = "conv3x3";
+  filename += (conv3x3_with_relu ? (fuse_3x3relu ? "_relu_" : "+relu_") : "");
+  filename += "dst_u8_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Save data " << filename << std::endl;
+  save_nhwc<u8>(filename.c_str(), pdst3x3, cd.mb, cd.ih, cd.iw, cd.ic);
+
+  // save 1x1 relu output data, s32 dtype
+  stream(stream::kind::eager).submit(pp1x1).wait();
+  filename = "conv1x1";
+  filename += (conv1x1_with_relu ? (fuse_1x1relu ? "_relu_" : "+relu_") : "");
+  filename += "dst_";
+  filename += std::to_string(id);
+  filename += ".txt";
+  std::cout << "Save data " << filename << std::endl;
+  save_nhwc<s32>(filename.c_str(), pdst1x1, cd.mb, cd.oh, cd.ow, cd.oc);
+#endif
+
+  for (auto i = 0; i < burning_iter; ++i) {
+    stream(stream::kind::eager).submit(pp3x3).wait();
+    stream(stream::kind::eager).submit(pp1x1).wait();
+  }
+
+  auto get_current_ms = []() -> double {
+    struct timeval time;
+    gettimeofday(&time, NULL);
+    return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
+  };
+
+  auto t_start = get_current_ms();
+  double sum3x3 = 0;
+  double sum1x1 = 0;
+  
+  for (auto i = 0; i < iter; ++i) {
+    auto s1 = get_current_ms();
+    stream(stream::kind::eager).submit(pp3x3).wait();
+    auto s2 = get_current_ms();
+    stream(stream::kind::eager).submit(pp1x1).wait();
+    auto s3 = get_current_ms();
+    sum3x3 += (s2 - s1);
+    sum1x1 += (s3 - s2);
+  }
+  auto t_stop = get_current_ms();
+
+  std::cout << "Conv3x3";
+  if (conv3x3_with_relu) {
+    if (fuse_3x3relu) {
+      std::cout << "_ReLU fused";
+    } else {
+      std::cout << "+ReLU non-fused";
+    }
+  }
+
+  std::cout << " + Conv1x1";
+  if (conv1x1_with_relu) {
+    if (fuse_1x1relu) {
+      std::cout << "_ReLU fused";
+    } else {
+      std::cout << "+ReLU non-fused";
+    }
+  }
+
+  if (with_bias) {
+    std::cout << " with bias";
+  } else {
+    std::cout << " without bias";
+  }
+    
+#ifdef ENABLE_VNNI
+  std::cout << " with VNNI ";
+#else
+  std::cout << " without VNNI ";
+#endif
+  std::cout << "avg time ("
+  << sum3x3 / (double)iter << " + " << sum1x1 / (double)iter << "): "
+  << (t_stop - t_start) / (double) iter << " ms" << std::endl;
 }
 
 static void usage() {
-  std::cout << "./test_fuse function(3x3/1x1/reorder/test_load_data) buring_iter(1~1000) valid_iter(1~1000) test_case_idx(0/1/2) option(0/1)"<< std::endl;
-  std::cout << "function: \n 3x3: conv_relu or conv+relu \n 1x1: conv3x3_relu+conv1x1_relu" << std::endl;
-  std::cout << "buring_iter: \n defalut is 10 \nvalid_iter: default is 10" << std::endl;
-  std::cout << "test_case_idx: \n default is 2 \n" << std::endl;
-  std::cout << "option: in 3x3 it's with_fuse; in 1x1 it's with_bias" << std::endl;
+  std::cout << "./test_fuse function_options test_case_idx(0/1/2/3) buring_iter(1~1000) valid_iter(1~1000)"<< std::endl;
+  std::cout << "function_options:\n e.g.\n" << std::endl;
+  std::cout << "3x3_relu: conv3x3 fused relu" << std::endl;
+  std::cout << "3x3_relu+1x1_relu: conv3x3 fused relu and conv1x1 fused relu" << std::endl;
+  std::cout << "test_case_idx: \n default is 3 \n" << std::endl;
+  std::cout << "buring_iter: \n defalut is 200 \nvalid_iter: default is 200" << std::endl;
+  std::cout << "with_bias: 0 or 1" << std::endl;
 }
 
 #define CHECK(x) \
@@ -544,100 +724,138 @@ static void usage() {
     usage(); assert(false);\
   }
 
+template <typename T, typename P>
+inline bool one_of(T val, P item) { return val == item; }
+template <typename T, typename P, typename... Args>
+inline bool one_of(T val, P item, Args... item_others) {
+    return val == item || one_of(val, item_others...);
+}
+
 int main(int argc, char **argv) {
-    // std::cout << argv[0] << std::endl;
-    std::string func_option("3x3");
-    bool with_fuse = true, with_bias = true;
-    int test_case_idx = 2;
-    if (argc >= 2) {
-      std::string in(argv[1]);
-      func_option = in;
-      CHECK(in == "3x3" || in == "1x1" || in == "reorder" || in == "test_load_data");
+  // std::cout << argv[0] << std::endl;
+  std::string func_option("3x3_relu");
+  bool with_bias = true;
+  int test_case_idx = 3;
+  // conv desc
+  test_convolution_sizes_t cds[] = {
+    { // small one
+      2, 1,  // bs, gp
+      12, 16, 16,  // ic, ih, iw
+      32, 14, 14,  // oc, oh, ow
+      3, 3,  // kh, kw
+      0, 0,  // ph, pw
+      1, 1   // sh, sw
+    },
+    {
+      2, 1,  // bs, gp
+      64, 128, 128,  // ic, ih, iw
+      128, 128, 128,  // oc, oh, ow
+      3, 3,  // kh, kw
+      1, 1,  // ph, pw
+      1, 1   // sh, sw
+    },
+    {
+      2, 1,  // bs, gp
+      32, 258, 258,  // ic, ih, iw
+      64, 256, 256,  // oc, oh, ow
+      3, 3,  // kh, kw
+      0, 0,  // ph, pw
+      1, 1   // sh, sw
+    },
+    {
+      50, 1,  // bs, gp
+      64, 56, 56,  // ic, ih, iw
+      64, 56, 56,  // oc, oh, ow
+      3, 3,  // kh, kw
+      1, 1,  // ph, pw
+      1, 1   // sh, sw
     }
-    if (func_option == "reorder" && argc >= 3) {
-      std::cout << "Warnning: \" " << argv[2] <<
-        " \" and after inputs are invalid when test_reorder." << std::endl;
-    }
-    if (argc >= 3) {
-      std::string in(argv[2]);
-      burning_iter = std::stoi(in);
-      CHECK(burning_iter > 0 && burning_iter <= 1000);
-    }
-    if (argc >= 4) {
-      std::string in(argv[3]);
-      iter = std::stoi(in);
-      CHECK(iter > 0 && iter <= 1000);
-    }
-    if (argc >= 5) {
-      std::string in(argv[4]);
-      test_case_idx = std::stoi(in);
-      CHECK(test_case_idx >= 0 && test_case_idx < 4);
-    }
+  };
+  if (argc >= 2) {
+    std::string in(argv[1]);
+    func_option = in;
+    CHECK(one_of(func_option,
+      "3x3_relu+1x1_relu",
+      "3x3_relu+1x1+relu",
+      "3x3+relu+1x1_relu",
+      "3x3+relu+1x1+relu",
+      "3x3+1x1",
+      "3x3",
+      "1x1",
+      "3x3_relu",
+      "3x3+relu",
+      "1x1_relu",
+      "1x1+relu",
+      "reorder",
+      "test_load_data"));
+  }
+  if (one_of(func_option, "reorder", "test_load_data") && argc >= 3) {
+    std::cout << "Warnning: \" " << argv[2] <<
+      " \" and after inputs are invalid when test_reorder or test_load_data." << std::endl;
+  }
+  
+  if (argc >= 3) {
+    std::string in(argv[2]);
+    test_case_idx = std::stoi(in);
+    CHECK(test_case_idx >= 0 && test_case_idx < (int)(sizeof(cds)/sizeof(cds[0])));
+  }
+  if (argc >= 4) {
+    std::string in(argv[3]);
+    burning_iter = std::stoi(in);
+    CHECK(burning_iter > 0 && burning_iter <= 1000);
+  }
+  if (argc >= 5) {
+    std::string in(argv[4]);
+    iter = std::stoi(in);
+    CHECK(iter > 0 && iter <= 1000);
+  }
 
-    if (argc >= 6) {
-      std::string in(argv[5]);
-      assert(in == "0" || in == "1");
-      bool res = static_cast<bool>(std::stoi(in));
-      if (func_option == "3x3") {
-        with_fuse = res;
-      } else if (func_option == "1x1") {
-        with_bias = res;
-      } 
-    }
-
-    // conv desc
-    test_convolution_sizes_t cds[] = {
-      { // small one
-        2, 1,  // bs, gp
-        12, 16, 16,  // ic, ih, iw
-        32, 14, 14,  // oc, oh, ow
-        3, 3,  // kh, kw
-        0, 0,  // ph, pw
-        1, 1   // sh, sw
-      },
-      {
-        2, 1,  // bs, gp
-        64, 128, 128,  // ic, ih, iw
-        128, 128, 128,  // oc, oh, ow
-        3, 3,  // kh, kw
-        1, 1,  // ph, pw
-        1, 1   // sh, sw
-      },
-      {
-        2, 1,  // bs, gp
-        32, 258, 258,  // ic, ih, iw
-        64, 256, 256,  // oc, oh, ow
-        3, 3,  // kh, kw
-        0, 0,  // ph, pw
-        1, 1   // sh, sw
-      },
-      {
-        50, 1,  // bs, gp
-        64, 56, 56,  // ic, ih, iw
-        64, 56, 56,  // oc, oh, ow
-        3, 3,  // kh, kw
-        1, 1,  // ph, pw
-        1, 1   // sh, sw
-      }
-    };
-
-    auto &pm = cds[test_case_idx];
-    printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
-      pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
-    try {
-        if (func_option == "3x3") {  // 3x3_relu
-          test_conv(cds[test_case_idx], with_fuse);
-        } else if (func_option == "1x1") {  // 3x3_relu_1x1_relu
-          test_conv3x3_1x1(cds[test_case_idx], with_bias);
-        } else if (func_option == "test_load_data") {
-          test_load_data(cds);
-        } else {  // reoder
-          test_reorder();
-        }
-    }
-    catch(error& e) {
-        std::cerr << "status: " << e.status << std::endl;
-        std::cerr << "message: " << e.message << std::endl;
-    }
+  if (argc >= 6) {
+    std::string in(argv[5]);
+    assert(in == "0" || in == "1");
+    with_bias = static_cast<bool>(std::stoi(in));
+  }
+  if (argc >= 7) {
+    std::cout << "Warnning: no more args accepted: " << argv[6] << std::endl;
+    usage();
     return 0;
+  }
+
+  auto &pm = cds[test_case_idx];
+  printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
+    pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
+  try {
+    if (func_option == "3x3") {
+      test_conv("3x3", cds, test_case_idx, false, false, with_bias);
+    } else if (func_option == "3x3_relu") {
+      test_conv("3x3", cds, test_case_idx, true, true, with_bias);
+    } else if (func_option == "3x3+relu") {
+      test_conv("3x3", cds, test_case_idx, true, false, with_bias);
+    } else if (func_option == "1x1") {
+      test_conv("1x1", cds, test_case_idx, false, false, with_bias);
+    } else if (func_option == "1x1_relu") {
+      test_conv("1x1", cds, test_case_idx, true, true, with_bias);
+    } else if (func_option == "1x1+relu") {
+      test_conv("1x1", cds, test_case_idx, true, false, with_bias);
+    } else if (func_option == "3x3+1x1") {
+      test_conv3x3_1x1(cds, test_case_idx, false, false, true, true, with_bias);
+    } else if (func_option == "3x3_relu+1x1_relu") {
+      test_conv3x3_1x1(cds, test_case_idx, true, true, true, true, with_bias);
+    } else if (func_option == "3x3+relu+1x1+relu") {
+      test_conv3x3_1x1(cds, test_case_idx, true, true, false, false, with_bias);
+    } else if (func_option == "3x3_relu+1x1+relu") {
+      test_conv3x3_1x1(cds, test_case_idx, true, true, true, false, with_bias);
+    } else if (func_option == "3x3+relu+1x1_relu") {
+      test_conv3x3_1x1(cds, test_case_idx, true, true, false, true, with_bias);
+    } else if (func_option == "test_load_data") {
+      test_load_data(cds);
+    } else {  // reoder
+      test_reorder();
+    }
+  }
+  catch(error& e) {
+    std::cerr << "status: " << e.status << std::endl;
+    std::cerr << "message: " << e.message << std::endl;
+  }
+  return 0;
 }
