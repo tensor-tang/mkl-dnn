@@ -93,6 +93,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_output(int ur_w)
     L(l_ret);
 }
 
+#ifdef FUSE_CONV
 void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_1x1output(int ur_w)
 {
     Label l_first_load, l_ret;
@@ -180,6 +181,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
   }
   L(l_ret);
 }
+#endif
 
 void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
 {
@@ -225,8 +227,9 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             int aux_output_offset
                 = jcp.typesize_out * (k * jcp.oc_block
                                         + j * jcp.oc * jcp.ngroups);
-            // auto addr = EVEX_compress_addr(reg_out, aux_output_offset);
-
+            #ifndef FUSE_CONV
+            auto addr = EVEX_compress_addr(reg_out, aux_output_offset);
+            #endif
             Xmm xmm = xmm_out(j, k);
             Zmm zmm = zmm_out(j, k);
             vcvtdq2ps (zmm, zmm);
@@ -235,7 +238,8 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales, scale_offset));
             if (maybe_relu(0))
                 vmaxps(zmm, zmm_zero, zmm);
-            /*if (p_sum_scale) { // post_op: sum
+            #ifndef FUSE_CONV
+            if (p_sum_scale) { // post_op: sum
                 auto zmm_prev_dst = zmm_bcast;
                 switch (jcp.dst_dt) {
                 case data_type::f32:
@@ -250,7 +254,8 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                     vaddps(zmm, zmm_prev_dst);
                 else
                     vfmadd231ps(zmm, zmm_prev_dst, zword_b[reg_ptr_sum_scale]);
-            }*/
+            }
+            #endif
             if (maybe_relu(1))
                 vmaxps(zmm, zmm_zero, zmm);
 
@@ -262,7 +267,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                 else
                     assert(!"unimplemented");
             }
-            /*
+            #ifndef FUSE_CONV
             switch (jcp.dst_dt) {
             case data_type::f32:
             case data_type::s32: vmovups(addr, zmm); break;
@@ -270,10 +275,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
             case data_type::u8: vpmovusdb(xmm, zmm); vmovups(addr, xmm); break;
             default: assert(!"unknown dst_dt");
             }
-            */
+            #endif
         }
     }
 
+#ifdef FUSE_CONV
     ///////////////// conv 1x1 /////////////////////////////////////////
     // this lamda function should be the same with compute_loop
     auto compute = [=](Zmm vreg_acc, Zmm vreg_wei, Zmm vreg_src) {
@@ -307,8 +313,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
           for (int jw = 0; jw < ur_w; ++jw) {
             if (i4 == 0 ) {
               movd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
-            }
-            else {
+            } else {
               pextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
             }
             vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
@@ -316,11 +321,12 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
           }
         }
       }
-      
+
       store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
       add(reg_ptr_acc1x1, acc1x1_shift);
       add(reg_ptr_out1x1, out1x1_shift); // out format is nhw,c/16,16o
     }
+#endif
     jmp(l_ret, T_NEAR);
 
     L(l_update_acc);
@@ -425,7 +431,10 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         * jcp.ic * jcp.ngroups;
     int inp_shift = jcp.typesize_in *
                         (jcp.ur_w * jcp.stride_w * jcp.ic * jcp.ngroups);
-    // int out_shift = jcp.typesize_out * (jcp.ur_w * jcp.oc * jcp.ngroups);
+    #ifndef FUSE_CONV
+    int out_shift = jcp.typesize_out *
+                        (jcp.ur_w * jcp.oc * jcp.ngroups);
+    #endif
     int acc_shift = jcp.typesize_acc *
                         (jcp.ur_w * jcp.oc_block * jcp.nb_oc_blocking);
 
@@ -437,7 +446,10 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
     vpbroadcastw(zmm_one, _t);
 
     mov(reg_inp, ptr[param1 + GET_OFF(src)]);
-    // mov(reg_out, ptr[param1 + GET_OFF(dst)]);    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
+    #ifndef FUSE_CONV
+    mov(reg_out, ptr[param1 + GET_OFF(dst)]);
+    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
+    #endif
     mov(reg_kh, ptr[param1 + GET_OFF(kh_padding)]);
     mov(reg_acc_s32, ptr[param1 + GET_OFF(acc_s32)]);
 
@@ -455,7 +467,9 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         if (n_oi == 0) {
             compute_loop(jcp.ur_w, jcp.l_pad, r_pad1);
             add(reg_inp, inp_shift_pad);
-            // add(reg_out, out_shift);
+            #ifndef FUSE_CONV
+            add(reg_out, out_shift);
+            #endif
             add(reg_acc_s32, acc_shift);
             if (jcp.ur_w_tail != 0) {
                 compute_loop(jcp.ur_w_tail, 0, r_pad);
@@ -464,7 +478,9 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (jcp.l_pad > 0) {
                 compute_loop(jcp.ur_w, jcp.l_pad, 0);
                 add(reg_inp, inp_shift_pad);
-                // add(reg_out, out_shift);
+                #ifndef FUSE_CONV
+                add(reg_out, out_shift);
+                #endif
                 add(reg_acc_s32, acc_shift);
 
                 inc(reg_oi);
@@ -476,7 +492,9 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
                 L(ow_loop_label); {
                     compute_loop(jcp.ur_w, 0, 0);
                     add(reg_inp, inp_shift);
-                    // add(reg_out, out_shift);
+                    #ifndef FUSE_CONV
+                    add(reg_out, out_shift);
+                    #endif
                     add(reg_acc_s32, acc_shift);
 
                     inc(reg_oi);
@@ -487,7 +505,9 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (r_pad1 > 0) {
                 compute_loop(jcp.ur_w, 0, r_pad1);
                 add(reg_inp, inp_shift);
-                // add(reg_out, out_shift);
+                #ifndef FUSE_CONV
+                add(reg_out, out_shift);
+                #endif
                 add(reg_acc_s32, acc_shift);
             }
             if (jcp.ur_w_tail != 0) {
@@ -584,6 +604,7 @@ status_t jit_avx512_core_u8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
         return status::unimplemented;
     }
 
+#ifdef FUSE_CONV
     // conv 1x1
     if (jcp.oc_block % 4 != 0) {
         return status::unimplemented;
@@ -594,6 +615,7 @@ status_t jit_avx512_core_u8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
     if (jcp.oc1x1 % jcp.oc1x1_block != 0) {
         return status::unimplemented;
     }
+#endif
 
     jcp.dilate_h = cd.dilates[0];
     jcp.dilate_w = cd.dilates[1];

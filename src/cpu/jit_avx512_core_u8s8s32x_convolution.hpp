@@ -83,7 +83,7 @@ struct _jit_avx512_core_u8s8s32x_convolution_fwd_t : public cpu_primitive_t {
                             * conf_.jcp_.nb_oc_blocking;
         ws_ = (acc_data_t *)malloc(
                 nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);
-
+#ifdef FUSE_CONV
         // conv acc 1x1
         // acc format (oc/16, ow, 16o)
         ws1x1_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc1x1;
@@ -96,15 +96,17 @@ struct _jit_avx512_core_u8s8s32x_convolution_fwd_t : public cpu_primitive_t {
         wei1x1_ = (wei_data_t *)malloc(conf_.jcp_.oc1x1 * conf_.jcp_.oc * sizeof(wei_data_t), 64);
         bia1x1_ = (acc_data_t *)malloc(conf_.jcp_.oc1x1 * sizeof(acc_data_t), 64);  // bias1x1 only support s32 yet
         out1x1_ = (dst_data_t *)malloc(conf_.jcp_.mb * conf_.jcp_.oh * conf_.jcp_.ow * conf_.jcp_.oc1x1 * sizeof(dst_data_t), 64);
+#endif
     }
 
     ~_jit_avx512_core_u8s8s32x_convolution_fwd_t() {
         free(ws_);
+#ifdef FUSE_CONV
         free(ws1x1_);
-
         free(wei1x1_);
         free(bia1x1_);
         free(out1x1_);
+#endif
         delete kernel_;
     };
 
@@ -124,14 +126,16 @@ private:
     pd_t conf_;
     jit_avx512_core_u8s8s32x_fwd_kernel *kernel_;
     size_t ws_per_thread_;
-    size_t ws1x1_per_thread_;
     acc_data_t *ws_;
-    acc_data_t *ws1x1_;
 
+#ifdef FUSE_CONV
+    size_t ws1x1_per_thread_;
+    acc_data_t *ws1x1_;
     // tmp here
     wei_data_t *wei1x1_;
     acc_data_t *bia1x1_;
     dst_data_t *out1x1_;
+#endif
 };
 
 template <impl::data_type_t dst_type>

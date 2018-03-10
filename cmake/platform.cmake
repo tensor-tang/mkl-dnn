@@ -33,6 +33,11 @@ if(ENABLE_VNNI)
     add_definitions(-DENABLE_VNNI)
 endif()
 
+option(FUSE_CONV "Enable 3x3 1x1 fuse." OFF)
+if(FUSE_CONV)
+    add_definitions(-DFUSE_CONV)
+endif()
+
 option(LOAD_SAVE_DATA "Enable Load and save data." ON)
 if(LOAD_SAVE_DATA)
     add_definitions(-DLOAD_SAVE_DATA)

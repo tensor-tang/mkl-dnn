@@ -1,6 +1,5 @@
 build
 external
 .*.sw?
-
 *.txt
-*.tmp
+*.tmp
