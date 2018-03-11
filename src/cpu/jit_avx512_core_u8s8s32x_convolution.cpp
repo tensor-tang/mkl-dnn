@@ -88,7 +88,7 @@ execute_forward()
         // blk_off follo format: n, g, h, w, c
         size_t src_h_stride = src_d.blk_off(0, 0, 1);
 #ifdef FUSE_CONV
-        size_t out1x1_h_stride = jcp.oc1x1 * jcp.oh;
+        size_t out1x1_h_stride = jcp.ow * jcp.oc1x1;
 #else
         size_t dst_h_stride = dst_d.blk_off(0, 0, 1);
 #endif
@@ -127,7 +127,6 @@ execute_forward()
           for (int occ = 0; occ < oc_chunks; ++occ) {
             int ocb = occ * jcp.nb_oc_blocking;
 #ifdef FUSE_CONV
-            auto ws1x1_c = ws1x1_l + ocb * jcp.ow * jcp.oc1x1_block;  // format is (oc1x1/16, ow, 16o)
             auto wei1x1_c = wei1x1_ + ocb * 4 * 64; // format: oc1x1/16,ic1x1/4, 16o,4i
 #endif
             int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
@@ -177,7 +176,7 @@ execute_forward()
                     p.ocb3x3 = ocb;
                     p.wei1x1 = wei1x1_c; // oc1x1/16,ic1x1/4, 16o,4i
                     p.bia1x1 = bia1x1_;   // bias1x1 only support s32 yet
-                    p.acc1x1 = ws1x1_c;  // acc1x1 should be offset, format is (oc1x1/16, ow, 16o)
+                    p.acc1x1 = ws1x1_l;  // acc1x1 format is (oc1x1/16, ow, 16o), ow is in kernel, so do not need offset
                     p.out1x1 = out1x1_c; // shoud have ow offset in count
                     p.scales1x1 = scales1x1;  // only use one as 3x3 scale, should be fine 
 #else

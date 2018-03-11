@@ -157,19 +157,14 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
         vaddps(zmm, zmm, zmm_bias);
     vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales1x1, scale_offset)); 
     // out format is nhw,c/16,16o
-    int offset = jcp.typesize_acc * jw * jcp.oc1x1;
+    int offset = jcp.typesize_acc * (jw * jcp.oc1x1 + ocb1x1 * jcp.oc1x1_block);
     auto addr = EVEX_compress_addr(reg_ptr_out1x1, offset);
 
     // relu
     vmaxps(zmm, zmm_zero, zmm);
 
-    switch (jcp.dst_dt) {
-      case data_type::f32:
-      case data_type::s32: vmovups(addr, zmm); break;
-      case data_type::s8: vpmovsdb(xmm, zmm); vmovups(addr, xmm); break;
-      case data_type::u8: vpmovusdb(xmm, zmm); vmovups(addr, xmm); break;
-      default: assert(!"unknown dst_dt");
-      }
+    // 1x1 dst always s32
+    vmovups(addr, zmm);
   }
   jmp(l_ret, T_NEAR);
 
@@ -298,6 +293,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
     mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);
     mov(reg_ptr_acc1x1, ptr[param1 + GET_OFF(acc1x1)]);
     mov(reg_ptr_out1x1, ptr[param1 + GET_OFF(out1x1)]);
+    // TODO: need add current ow offset at reg_ptr_acc1x1 and reg_ptr_out1x1
     int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
     int out1x1_shift = jcp.typesize_out * jcp.oc1x1_block;  // out format is nhw,c/16,16o
     // compute all oc3x3 for all ur_w
@@ -324,7 +320,8 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
 
       store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
       add(reg_ptr_acc1x1, acc1x1_shift);
-      add(reg_ptr_out1x1, out1x1_shift); // out format is nhw,c/16,16o
+      // TODO: why??? out add
+      //add(reg_ptr_out1x1, out1x1_shift); // out format is nhw,c/16,16o 
     }
 #endif
     jmp(l_ret, T_NEAR);
@@ -448,8 +445,8 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
     mov(reg_inp, ptr[param1 + GET_OFF(src)]);
     #ifndef FUSE_CONV
     mov(reg_out, ptr[param1 + GET_OFF(dst)]);
-    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
     #endif
+    mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
     mov(reg_kh, ptr[param1 + GET_OFF(kh_padding)]);
     mov(reg_acc_s32, ptr[param1 + GET_OFF(acc_s32)]);
 

@@ -132,7 +132,7 @@ using s8 = int8_t;
 using s32 = int32_t;
 
 template<typename dtype>
-void fscanf_data(FILE* fp, dtype* pdata) {
+static void fscanf_data(FILE* fp, dtype* pdata) {
   printf("Error: unkown data type\n");
 }
 
@@ -466,6 +466,7 @@ void test_conv(const std::string& type, test_convolution_sizes_t* cds,
     pipeline.push_back(*fwd_relu);
   }
 #ifdef LOAD_SAVE_DATA
+  stream(stream::kind::eager).submit(pipeline).wait();
   filename = "conv";
   filename += type;
   filename += (with_relu ? (fuse_relu ? "_relu_" : "+relu_") : "");
