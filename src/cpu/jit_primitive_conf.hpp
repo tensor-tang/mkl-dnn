@@ -329,13 +329,19 @@ struct jit_pool_call_s {
 };
 
 struct jit_concat_call_s {
-    const void *src;
+    const void **src;
+    const int *ic;
     const void *dst;
 };
 
 struct jit_concat_conf_t {
     int bs;
-    int ih, iw;
+    int h, w;
+    int oc;
+    int n_inputs;
+    int typesize;
+    bool with_relu;
+    const int* ic;
 };
 
 }

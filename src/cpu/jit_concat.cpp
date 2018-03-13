@@ -14,7 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <string.h>
+#include "mkldnn_types.h"
+#include "c_types_map.hpp"
+#include "mkldnn_thread.hpp"
+#include "type_helpers.hpp"
+#include "utils.hpp"
 
 #include "jit_concat.hpp"
 
@@ -22,39 +26,46 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
+using namespace mkldnn::impl::utils;
+
 template <data_type_t data_type>
 void jit_concat_t<data_type>::execute_forward() {
-    auto dst = reinterpret_cast<data_t *>(this->memory());
-
     const int num_srcs = conf_.n_inputs();
+  for (int i = 0; i < num_srcs; ++i) {
+      const memory_desc_wrapper src_d(conf_.src_pd(i));
+      ic_[i] = src_d.dims()[1];
+      src_[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
+  }
+  auto dst = reinterpret_cast<data_t *>(this->memory());
+  const auto &jcp = kernel_->jcp;
 
-    for (int i = 0; i < num_srcs; ++i) {
-        const memory_desc_wrapper src_d(conf_.src_pd(i));
-        const memory_desc_wrapper img_d(conf_.src_image_pd(i));
-        ic[i] = src_d.dims()[1];
-        src[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
-        img[i] = dst + img_d.blk_off(0);
+#   pragma omp parallel
+  {
+    int ithr = omp_get_thread_num(), nthr = omp_get_num_threads();
+    int start{0}, end{0};
+    int work_amount = jcp.bs  * jcp.h * jcp.w;
+    balance211(work_amount, nthr, ithr, start, end);
+    jit_concat_call_s p = { 0 };
+
+    int n{0}, h{0}, w{0};
+    nd_iterator_init(start, n, jcp.bs, h, jcp.h, w, jcp.w);
+    for (int iwork = start; iwork < end; ++iwork) {
+      int nhw = n*(jcp.h*jcp.w) + h*(jcp.w) + w;
+      for (int i = 0; i < num_srcs; ++i) {
+        src_with_offset_[i] = src_[i] + (nhw*ic_[i]);
+      }
+      auto dst_c = dst + nhw * jcp.oc;
+
+      p.src = reinterpret_cast<const void **>(src_with_offset_);
+      p.ic = reinterpret_cast<const int *>(ic_);
+      p.dst = dst_c;
+
+      kernel_->jit_ker(&p);
+    
+      nd_iterator_step(n, jcp.bs, h, jcp.h, w, jcp.w);
     }
-
-    const memory_desc_wrapper dst_d(conf_.dst_pd());
-    const int n = dst_d.dims()[0];
-    const int oc = dst_d.dims()[1];
-    const int h = dst_d.dims()[2];
-    const int w = dst_d.dims()[3];
-
-#   pragma omp parallel for schedule(static) collapse(2)
-    for (int iter_n = 0; iter_n < n; ++iter_n) {
-        for (int iter_h = 0; iter_h < h; ++iter_h) {
-            for (int iter_w = 0; iter_w < w; ++iter_w) {
-                for (int iter_srcs = 0; iter_srcs < num_srcs; ++iter_srcs) {
-                    const size_t e = iter_n * h * w + iter_h * w + iter_w;
-                    const data_t *i = &src[iter_srcs][e*ic[iter_srcs]];
-                    data_t *o = &img[iter_srcs][e*oc];
-                    memcpy(o, i, ic[iter_srcs] * sizeof(data_t));
-                }
-            }
-        }
-    }
+  }
+  
 }
 
 template struct jit_concat_t<data_type::f32>;

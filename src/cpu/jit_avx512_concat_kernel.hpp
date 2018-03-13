@@ -38,34 +38,28 @@ struct jit_avx512_concat_kernel : public jit_generator {
         generate();
         jit_ker = (void (*)(jit_concat_call_s *))getCode();
     }
-    
-    jit_concat_conf_t jcp;
-    const primitive_attr_t &attr_;
-    void (*jit_ker)(jit_concat_call_s *);
-
-/*    static bool post_ops_ok(jit_concat_conf_t &jcp,
-            const primitive_attr_t &attr);
     static status_t init_conf(jit_concat_conf_t &jcp,
-            const convolution_desc_t &cd,
-            cpu_memory_t::pd_t &src_pd,
-            cpu_memory_t::pd_t &weights_pd,
+            nstl::vector<cpu_memory_t::pd_t> &src_pds,
             cpu_memory_t::pd_t &dst_pd,
-            cpu_memory_t::pd_t &bias_pd,
             const primitive_attr_t &attr,
             bool with_relu = false,
             float relu_negative_slope = 0.);
 
+    static bool post_ops_ok(jit_concat_conf_t &jcp,
+                const primitive_attr_t &attr);
+
+    jit_concat_conf_t jcp;
+    const primitive_attr_t &attr_;
+    void (*jit_ker)(jit_concat_call_s *);
 
 private:
     using reg64_t = const Xbyak::Reg64;
-    using reg32_t = const Xbyak::Reg32;
     using zmm_t = const Xbyak::Zmm;
     using xmm_t = const Xbyak::Xmm;
-    enum {
-        typesize = sizeof(float),
-        ker_reg_base_idx = 28,
-    };
 
+    reg64_t param    = abi_param1;
+
+/* 
     reg64_t reg_inp = r8;
     reg64_t reg_ker = r9;
     reg64_t aux_reg_inp = r11;
@@ -78,7 +72,6 @@ private:
     reg64_t reg_oi   = rbx;
     reg64_t reg_bias = rdx;
     reg64_t reg_kh   = abi_not_param1;
-    reg64_t param    = abi_param1;
     reg64_t reg_channel = r15;
     reg64_t reg_tmp = rbp;
     reg64_t imm_addr64 = r15;
