@@ -22,7 +22,7 @@
 
 #include "jit_avx512_concat_kernel.hpp"
 
-#define GET_OFF(field) offsetof(jit_conv_call_s, field)
+#define GET_OFF(field) offsetof(jit_concat_call_s, field)
 
 namespace mkldnn {
 namespace impl {
@@ -32,14 +32,51 @@ using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 using namespace Xbyak;
 
+void jit_avx512_concat_kernel::compute_one_input() {
+  Label l_next_block;
+  int shift_c = jcp.typesize * jcp.block;
+  mov(reg_nb, EVEX_compress_addr(reg_ptr_nb_ic, 0));
+  mov(reg_ptr_src_i, EVEX_compress_addr(reg_ptr_src, 0));
+
+  L(l_next_block); {
+    // load from dst
+    vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));  // TODO: try to use ptr and remove 0
+
+    // relu
+    // vmaxps(zmm_src, zmm_zero, zmm_src);
+
+    // save to dst
+    vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
+    add(reg_ptr_src_i, shift_c);
+    add(reg_ptr_dst, shift_c);
+    dec(reg_nb);
+    cmp(reg_nb, 0);
+    jg(l_next_block, T_NEAR);
+  }
+
+}
+
 void jit_avx512_concat_kernel::generate()
 {
   preamble();
 
-  // inputs: 3 inputs ptr
-//  mov(reg_inp, ptr[param1 + GET_OFF(src)]);
-//  mov(reg_inp, ptr[param1 + GET_OFF(ic)]);
-//  mov(reg_acc_s32, ptr[param1 + GET_OFF(dst)]);
+  mov(reg_ptr_src, ptr[param1 + GET_OFF(src)]);
+  mov(reg_ptr_nb_ic, ptr[param1 + GET_OFF(nb_ic)]);
+  mov(reg_ptr_dst, ptr[param1 + GET_OFF(dst)]);
+  vpxord(zmm_zero, zmm_zero, zmm_zero);
+
+  xor_(reg_ninputs, reg_ninputs);
+  Label l_next_input;
+  L(l_next_input); {
+    compute_one_input();
+
+    add(reg_ptr_src, 8); // move 64bits
+    add(reg_ptr_nb_ic, 4);  // move one int
+    inc(reg_ninputs);
+    cmp(reg_ninputs, jcp.n_inputs);
+    jl(l_next_input, T_NEAR);
+  }
+
   postamble();
 }
 
@@ -83,11 +120,12 @@ status_t jit_avx512_concat_kernel::init_conf(jit_concat_conf_t &jcp,
   if (!post_ops_ok(jcp, attr))
       return status::unimplemented;
 
+  jcp.dtype = dst_d.data_type();
   jcp.typesize = types::data_type_size(dst_d.data_type());
-
+  jcp.block = 64 / jcp.typesize;
   for (int i = 0; i < jcp.n_inputs; ++i) {
     const memory_desc_wrapper src_d(&src_pds[i]);
-    if (src_d.dims()[1] % (64 / jcp.typesize) != 0) {  
+    if (src_d.dims()[1] % jcp.block != 0) {  
       // all input channels should be dividable
       // input is s32 or float s32, channels should be 16x
       // input is s8 or u8, then 64x

@@ -330,7 +330,7 @@ struct jit_pool_call_s {
 
 struct jit_concat_call_s {
     const void **src;
-    const int *ic;
+    const int *nb_ic;
     const void *dst;
 };
 
@@ -339,9 +339,10 @@ struct jit_concat_conf_t {
     int h, w;
     int oc;
     int n_inputs;
+    data_type_t dtype;
     int typesize;
+    int block;  // u8: 64, s32: 16
     bool with_relu;
-    const int* ic;
 };
 
 }

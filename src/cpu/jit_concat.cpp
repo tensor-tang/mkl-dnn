@@ -30,14 +30,15 @@ using namespace mkldnn::impl::utils;
 
 template <data_type_t data_type>
 void jit_concat_t<data_type>::execute_forward() {
-    const int num_srcs = conf_.n_inputs();
+  const int num_srcs = conf_.n_inputs();
+  const auto &jcp = kernel_->jcp;
   for (int i = 0; i < num_srcs; ++i) {
-      const memory_desc_wrapper src_d(conf_.src_pd(i));
-      ic_[i] = src_d.dims()[1];
-      src_[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
+    const memory_desc_wrapper src_d(conf_.src_pd(i));
+    ic_[i] = src_d.dims()[1];
+    nb_ic_[i] = ic_[i] / jcp.block;
+    src_[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
   }
   auto dst = reinterpret_cast<data_t *>(this->memory());
-  const auto &jcp = kernel_->jcp;
 
 #   pragma omp parallel
   {
@@ -57,7 +58,7 @@ void jit_concat_t<data_type>::execute_forward() {
       auto dst_c = dst + nhw * jcp.oc;
 
       p.src = reinterpret_cast<const void **>(src_with_offset_);
-      p.ic = reinterpret_cast<const int *>(ic_);
+      p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
       p.dst = dst_c;
 
       kernel_->jit_ker(&p);

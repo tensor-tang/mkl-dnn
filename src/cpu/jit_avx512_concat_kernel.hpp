@@ -57,10 +57,22 @@ private:
     using zmm_t = const Xbyak::Zmm;
     using xmm_t = const Xbyak::Xmm;
 
-    reg64_t param    = abi_param1;
+    reg64_t param         = abi_param1;
+    reg64_t reg_ptr_src   = r8;
+    reg64_t reg_ptr_nb_ic = r9;
+    reg64_t reg_ptr_dst   = r10;
+    reg64_t reg_ptr_src_i = r11;
+    reg64_t reg_ninputs   = r12;
+    reg64_t reg_nb        = r15;
+
+    zmm_t zmm_src  = zmm_t(30);
+    zmm_t zmm_zero = zmm_t(31);
+
+    void compute_one_input();
+    void generate();
 
 /* 
-    reg64_t reg_inp = r8;
+    
     reg64_t reg_ker = r9;
     reg64_t aux_reg_inp = r11;
     reg64_t reg_ptr_sum_scale = r11;
@@ -80,7 +92,6 @@ private:
     zmm_t zmm_one = zmm_t(29);
     zmm_t zmm_scales = zmm_t(30);
     zmm_t zmm_bcast = zmm_t(30);
-    zmm_t zmm_zero = zmm_t(31);
     zmm_t zmm_wei = zmm_t(31);
 
     bool maybe_relu(int position);
@@ -88,7 +99,7 @@ private:
     void store_output(int ur_w);
     void compute_loop(int ur_w, int pad_l, int pad_r);
     */
-    void generate();
+
 };
 
 }

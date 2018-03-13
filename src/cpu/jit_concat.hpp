@@ -79,6 +79,7 @@ struct jit_concat_t: public cpu_primitive_t {
         src_ = (const data_t **)malloc(num_srcs*sizeof(data_t *), 64);
         src_with_offset_ = (const data_t **)malloc(num_srcs*sizeof(data_t *), 64);
         ic_ = (int *)malloc(num_srcs*sizeof(int), 64);
+        nb_ic_ = (int *)malloc(num_srcs*sizeof(int), 64);
       }
 
   ~jit_concat_t() {
@@ -101,6 +102,7 @@ private:
   const data_t **src_;
   const data_t **src_with_offset_;
   int *ic_;
+  int *nb_ic_;
 };
 
 }
