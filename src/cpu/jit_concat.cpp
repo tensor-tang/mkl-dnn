@@ -40,7 +40,10 @@ void jit_concat_t<data_type>::execute_forward() {
   }
   auto dst = reinterpret_cast<data_t *>(this->memory());
 
-#   pragma omp parallel
+
+// TODO: enable omp after debug
+//#   pragma omp parallel
+// TODO: optimize when omp max number >> work_amount, do not need setup all omp
   {
     int ithr = omp_get_thread_num(), nthr = omp_get_num_threads();
     int start{0}, end{0};

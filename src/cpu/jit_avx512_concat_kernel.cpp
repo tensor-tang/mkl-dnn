@@ -36,18 +36,18 @@ void jit_avx512_concat_kernel::compute_one_input() {
   Label l_next_block;
   int shift_c = jcp.typesize * jcp.block;
   mov(reg_nb, EVEX_compress_addr(reg_ptr_nb_ic, 0));
-  mov(reg_ptr_src_i, EVEX_compress_addr(reg_ptr_src, 0));
+  //mov(reg_ptr_src_i, ptr[reg_ptr_src]);
 
   L(l_next_block); {
     // load from dst
-    vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));  // TODO: try to use ptr and remove 0
+    // vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));  // TODO: try to use ptr and remove 0
 
     // relu
     // vmaxps(zmm_src, zmm_zero, zmm_src);
 
     // save to dst
-    vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
-    add(reg_ptr_src_i, shift_c);
+    // vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
+    //add(reg_ptr_src_i, shift_c);
     add(reg_ptr_dst, shift_c);
     dec(reg_nb);
     cmp(reg_nb, 0);
@@ -60,18 +60,17 @@ void jit_avx512_concat_kernel::generate()
 {
   preamble();
 
-  mov(reg_ptr_src, ptr[param1 + GET_OFF(src)]);
-  mov(reg_ptr_nb_ic, ptr[param1 + GET_OFF(nb_ic)]);
-  mov(reg_ptr_dst, ptr[param1 + GET_OFF(dst)]);
+  mov(reg_ptr_src, ptr[param + GET_OFF(src)]);
+  mov(reg_ptr_nb_ic, ptr[param + GET_OFF(nb_ic)]);
+  mov(reg_ptr_dst, ptr[param + GET_OFF(dst)]);
   vpxord(zmm_zero, zmm_zero, zmm_zero);
 
   xor_(reg_ninputs, reg_ninputs);
   Label l_next_input;
   L(l_next_input); {
     compute_one_input();
-
-    add(reg_ptr_src, 8); // move 64bits
-    add(reg_ptr_nb_ic, 4);  // move one int
+    add(reg_ptr_src, sizeof(void*)); // move 64bits
+    // add(reg_ptr_nb_ic, sizeof(int));  // move one int
     inc(reg_ninputs);
     cmp(reg_ninputs, jcp.n_inputs);
     jl(l_next_input, T_NEAR);
