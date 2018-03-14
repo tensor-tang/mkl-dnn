@@ -35,25 +35,24 @@ using namespace Xbyak;
 void jit_avx512_concat_kernel::compute_one_input() {
   Label l_next_block;
   int shift_c = jcp.typesize * jcp.block;
-  mov(reg_nb, EVEX_compress_addr(reg_ptr_nb_ic, 0));
-  //mov(reg_ptr_src_i, ptr[reg_ptr_src]);
+  mov(reg_nb, dword[reg_ptr_nb_ic]);
+  mov(reg_ptr_src_i, ptr[reg_ptr_src]);
 
   L(l_next_block); {
     // load from dst
-    // vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));  // TODO: try to use ptr and remove 0
+    vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));
 
     // relu
     // vmaxps(zmm_src, zmm_zero, zmm_src);
 
     // save to dst
-    // vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
-    //add(reg_ptr_src_i, shift_c);
+    vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
+    add(reg_ptr_src_i, shift_c);
     add(reg_ptr_dst, shift_c);
     dec(reg_nb);
     cmp(reg_nb, 0);
     jg(l_next_block, T_NEAR);
   }
-
 }
 
 void jit_avx512_concat_kernel::generate()
@@ -63,6 +62,7 @@ void jit_avx512_concat_kernel::generate()
   mov(reg_ptr_src, ptr[param + GET_OFF(src)]);
   mov(reg_ptr_nb_ic, ptr[param + GET_OFF(nb_ic)]);
   mov(reg_ptr_dst, ptr[param + GET_OFF(dst)]);
+
   vpxord(zmm_zero, zmm_zero, zmm_zero);
 
   xor_(reg_ninputs, reg_ninputs);
@@ -70,7 +70,7 @@ void jit_avx512_concat_kernel::generate()
   L(l_next_input); {
     compute_one_input();
     add(reg_ptr_src, sizeof(void*)); // move 64bits
-    // add(reg_ptr_nb_ic, sizeof(int));  // move one int
+    add(reg_ptr_nb_ic, sizeof(int));  // move one int
     inc(reg_ninputs);
     cmp(reg_ninputs, jcp.n_inputs);
     jl(l_next_input, T_NEAR);
@@ -116,8 +116,13 @@ status_t jit_avx512_concat_kernel::init_conf(jit_concat_conf_t &jcp,
   jcp.n_inputs = src_pds.size();
   jcp.with_relu = with_relu;
 
-  if (!post_ops_ok(jcp, attr))
-      return status::unimplemented;
+  if (!post_ops_ok(jcp, attr)) {
+    return status::unimplemented;
+  }
+
+  if (jcp.n_inputs > 16) {
+    return status::unimplemented;
+  }
 
   jcp.dtype = dst_d.data_type();
   jcp.typesize = types::data_type_size(dst_d.data_type());

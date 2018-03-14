@@ -54,6 +54,7 @@ struct jit_avx512_concat_kernel : public jit_generator {
 
 private:
     using reg64_t = const Xbyak::Reg64;
+    using reg32_t = const Xbyak::Reg32;
     using zmm_t = const Xbyak::Zmm;
     using xmm_t = const Xbyak::Xmm;
 
@@ -63,7 +64,7 @@ private:
     reg64_t reg_ptr_dst   = r10;
     reg64_t reg_ptr_src_i = r11;
     reg64_t reg_ninputs   = r12;
-    reg64_t reg_nb        = r15;
+    reg32_t reg_nb        = r15d;
 
     zmm_t zmm_src  = zmm_t(30);
     zmm_t zmm_zero = zmm_t(31);
@@ -71,8 +72,7 @@ private:
     void compute_one_input();
     void generate();
 
-/* 
-    
+/*
     reg64_t reg_ker = r9;
     reg64_t aux_reg_inp = r11;
     reg64_t reg_ptr_sum_scale = r11;
