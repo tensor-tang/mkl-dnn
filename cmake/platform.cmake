@@ -33,6 +33,11 @@ if(ENABLE_VNNI)
     add_definitions(-DENABLE_VNNI)
 endif()
 
+option(ENABLE_JIT_CONCAT "Enable JIT concat function." ON)
+if(ENABLE_JIT_CONCAT)
+    add_definitions(-DENABLE_JIT_CONCAT)
+endif()
+
 option(FUSE_CONV "Enable 3x3 1x1 fuse." OFF)
 if(FUSE_CONV)
     add_definitions(-DFUSE_CONV)

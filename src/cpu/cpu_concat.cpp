@@ -35,10 +35,12 @@ using cpd_create_f = mkldnn::impl::engine_t::concat_primitive_desc_create_f;
 namespace {
 #define INSTANCE(...) __VA_ARGS__::pd_t::create
 static const cpd_create_f cpu_concat_impl_list[] = {
+#ifdef ENABLE_JIT_CONCAT
     INSTANCE(jit_concat_t<data_type::f32>),
     INSTANCE(jit_concat_t<data_type::u8>),
     INSTANCE(jit_concat_t<data_type::s8>),
     INSTANCE(jit_concat_t<data_type::s32>),
+#endif
     INSTANCE(nhwc_concat_t<data_type::f32>),
     INSTANCE(nhwc_concat_t<data_type::u8>),
     INSTANCE(nhwc_concat_t<data_type::s8>),
