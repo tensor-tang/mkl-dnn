@@ -271,7 +271,10 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                 else
                     assert(!"unimplemented");
             }
-            #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+            // always convert to s8
+            vpmovsdb(xmm, zmm);
+#else
             switch (jcp.dst_dt) {
             case data_type::f32:
             case data_type::s32: vmovups(addr, zmm); break;
