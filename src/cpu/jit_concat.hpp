@@ -77,15 +77,23 @@ struct jit_concat_t: public cpu_primitive_t {
 
         const int num_srcs = conf_.n_inputs();
         src_ = (const data_t **)malloc(num_srcs*sizeof(data_t *), 64);
-        src_with_offset_ = (const data_t **)malloc(num_srcs*sizeof(data_t *), 64);
         ic_ = (int *)malloc(num_srcs*sizeof(int), 64);
         nb_ic_ = (int *)malloc(num_srcs*sizeof(int), 64);
+        for (int i = 0; i < num_srcs; ++i) {
+          const memory_desc_wrapper src_d(conf_.src_pd(i));
+          ic_[i] = src_d.dims()[1];  // TODO: try to make ic, nb_ic const  reinterpe???
+          nb_ic_[i] = ic_[i] / conf_.jcp_.block;
+        }
+
+        const int nthreads = omp_get_max_threads();
+        src_with_offset_ = (const data_t **)malloc(nthreads*num_srcs*sizeof(data_t *), 64);
       }
 
   ~jit_concat_t() {
       free(src_);
       free(src_with_offset_);
       free(ic_);
+      free(nb_ic_);
       delete kernel_;
   }
 
@@ -96,6 +104,7 @@ struct jit_concat_t: public cpu_primitive_t {
 
 private:
   void execute_forward();
+  void dummy_kernel(jit_concat_call_s *p);
   pd_t conf_;
   jit_avx512_concat_kernel *kernel_;
 

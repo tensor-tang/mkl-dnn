@@ -144,12 +144,23 @@ INSTANTIATE_TEST_CASE_P(TestConcat, concat_test_float, ::testing::Values(
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nchw, memory::format::nchw}, memory::format::nChw8c,
     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
+// below is for jit concat
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
     {{2, 64, 6, 6}, {2, 32, 6, 6}}, {2, 96, 6, 6}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
     {{2, 32, 1, 1}, {2, 96, 1, 1}}, {2, 128, 1, 1}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{2, 64, 3, 4}, {2, 32, 3, 4}}, {2, 96, 3, 4}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{12, 64, 3, 4}, {12, 32, 3, 4}}, {12, 96, 3, 4}},
+    
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nChw8c, memory::format::nChw8c}, memory::format::nchw,
     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
@@ -186,8 +197,18 @@ INSTANTIATE_TEST_CASE_P(TestConcat, concat_test_s8, ::testing::Values(
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
     {{2, 32, 1, 1}, {2, 96, 1, 1}}, {2, 128, 1, 1}},
+// below is for jit concat
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nchw, memory::format::nchw}, memory::format::nchw,
-    {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}}
+    {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{2, 256, 3, 4}, {2, 256, 3, 4}}, {2, 512, 3, 4}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{2, 256, 6, 6}, {2, 256, 6, 6}}, {2, 512, 6, 6}},
+    concat_test_params{engine::kind::cpu, 1,
+    {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
+    {{2, 64, 1, 1}, {2, 96, 1, 1}}, {2, 160, 1, 1}}
     ));
 }

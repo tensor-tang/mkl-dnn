@@ -29,47 +29,81 @@ namespace cpu {
 using namespace mkldnn::impl::utils;
 
 template <data_type_t data_type>
-void jit_concat_t<data_type>::execute_forward() {
-  const int num_srcs = conf_.n_inputs();
+void jit_concat_t<data_type>::dummy_kernel(jit_concat_call_s *p) {
+  const data_t** src = reinterpret_cast<const data_t **>(p->src);
+  const int* nbs = reinterpret_cast<const int *>(p->nb_ic);
+  data_t* dst = reinterpret_cast<data_t *>(p->dst);
   const auto &jcp = kernel_->jcp;
-  for (int i = 0; i < num_srcs; ++i) {
-    const memory_desc_wrapper src_d(conf_.src_pd(i));
-    ic_[i] = src_d.dims()[1];
-    nb_ic_[i] = ic_[i] / jcp.block;
-    src_[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
-  }
-  auto dst = reinterpret_cast<data_t *>(this->memory());
 
-
-// TODO: enable omp after debug
-//#   pragma omp parallel
-// TODO: optimize when omp max number >> work_amount, do not need setup all omp
-  {
-    int ithr = omp_get_thread_num(), nthr = omp_get_num_threads();
-    int start{0}, end{0};
-    int work_amount = jcp.bs  * jcp.h * jcp.w;
-    balance211(work_amount, nthr, ithr, start, end);
-    jit_concat_call_s p = { 0 };
-
-    int n{0}, h{0}, w{0};
-    nd_iterator_init(start, n, jcp.bs, h, jcp.h, w, jcp.w);
-    for (int iwork = start; iwork < end; ++iwork) {
-      int nhw = n*(jcp.h*jcp.w) + h*(jcp.w) + w;
-      for (int i = 0; i < num_srcs; ++i) {
-        src_with_offset_[i] = src_[i] + (nhw*ic_[i]);
+  data_t* pdst = dst;
+  for (int i = 0; i < jcp.n_inputs; ++i) {
+    const data_t* psrc = src[i];
+    for (int nb = 0; nb < nbs[i]; ++nb) {
+      for (int k = 0; k < jcp.block; ++k) {
+        *pdst = *psrc;
+        pdst++;
+        psrc++;
       }
-      auto dst_c = dst + nhw * jcp.oc;
-
-      p.src = reinterpret_cast<const void **>(src_with_offset_);
-      p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
-      p.dst = dst_c;
-
-      kernel_->jit_ker(&p);
-    
-      nd_iterator_step(n, jcp.bs, h, jcp.h, w, jcp.w);
     }
   }
-  
+}
+
+template <data_type_t data_type>
+void jit_concat_t<data_type>::execute_forward() {
+  const auto &jcp = kernel_->jcp;
+  // update srcs data
+  for (int i = 0; i < jcp.n_inputs; ++i) {
+    const memory_desc_wrapper src_d(conf_.src_pd(i));
+    src_[i] = reinterpret_cast<const data_t *>(this->input_memory(i));
+  }
+
+  auto dst = reinterpret_cast<data_t *>(this->memory());
+  const int work_amount = jcp.bs  * jcp.h * jcp.w;
+  const int max = omp_get_max_threads();
+
+  if (work_amount < max) {
+#   pragma omp parallel for schedule(static) collapse(1)
+    for (int iwork = 0; iwork < max; ++iwork) {
+      int n{0}, h{0}, w{0};
+      nd_iterator_init(iwork, n, jcp.bs, h, jcp.h, w, jcp.w);
+      int nhw = n*(jcp.h*jcp.w) + h*(jcp.w) + w;
+      auto srcs = src_with_offset_ + iwork * jcp.n_inputs;
+      for (int i = 0; i < jcp.n_inputs; ++i) {
+        srcs[i] = src_[i] + (nhw*ic_[i]);
+      }
+      jit_concat_call_s p = { 0 };
+      p.src = reinterpret_cast<const void **>(srcs);
+      p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
+      p.dst = reinterpret_cast<void *>(dst + nhw * jcp.oc);
+      kernel_->jit_ker(&p);
+      //dummy_kernel(&p);
+    }
+  } else {
+    // if work amount > max omp threads, need balance
+#   pragma omp parallel
+    {
+      int ithr = omp_get_thread_num(), nthr = omp_get_num_threads();
+      int start{0}, end{0};
+      balance211(work_amount, nthr, ithr, start, end);
+      int n{0}, h{0}, w{0};
+      nd_iterator_init(start, n, jcp.bs, h, jcp.h, w, jcp.w);
+      jit_concat_call_s p = { 0 };
+      auto srcs = src_with_offset_ + ithr * jcp.n_inputs;
+      for (int iwork = start; iwork < end; ++iwork) {
+        int nhw = n*(jcp.h*jcp.w) + h*(jcp.w) + w;
+        for (int i = 0; i < jcp.n_inputs; ++i) {
+          srcs[i] = src_[i] + (nhw*ic_[i]);
+        }
+        jit_concat_call_s p = { 0 };
+        p.src = reinterpret_cast<const void **>(srcs);
+        p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
+        p.dst = reinterpret_cast<void *>(dst + nhw * jcp.oc);
+        kernel_->jit_ker(&p);
+        //dummy_kernel(&p);
+        nd_iterator_step(n, jcp.bs, h, jcp.h, w, jcp.w);
+      }
+    }
+  }
 }
 
 template struct jit_concat_t<data_type::f32>;
