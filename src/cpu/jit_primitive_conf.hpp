@@ -331,7 +331,7 @@ struct jit_pool_call_s {
 struct jit_concat_call_s {
     const void **src;
     const int *nb_ic;
-    void *dst;
+    const void *dst;
 };
 
 struct jit_concat_conf_t {

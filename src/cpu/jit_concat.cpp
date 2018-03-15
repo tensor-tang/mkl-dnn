@@ -28,25 +28,6 @@ namespace cpu {
 
 using namespace mkldnn::impl::utils;
 
-template <data_type_t data_type>
-void jit_concat_t<data_type>::dummy_kernel(jit_concat_call_s *p) {
-  const data_t** src = reinterpret_cast<const data_t **>(p->src);
-  const int* nbs = reinterpret_cast<const int *>(p->nb_ic);
-  data_t* dst = reinterpret_cast<data_t *>(p->dst);
-  const auto &jcp = kernel_->jcp;
-
-  data_t* pdst = dst;
-  for (int i = 0; i < jcp.n_inputs; ++i) {
-    const data_t* psrc = src[i];
-    for (int nb = 0; nb < nbs[i]; ++nb) {
-      for (int k = 0; k < jcp.block; ++k) {
-        *pdst = *psrc;
-        pdst++;
-        psrc++;
-      }
-    }
-  }
-}
 
 template <data_type_t data_type>
 void jit_concat_t<data_type>::execute_forward() {
@@ -76,7 +57,6 @@ void jit_concat_t<data_type>::execute_forward() {
       p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
       p.dst = reinterpret_cast<void *>(dst + nhw * jcp.oc);
       kernel_->jit_ker(&p);
-      //dummy_kernel(&p);
     }
   } else {
     // if work amount > max omp threads, need balance
@@ -99,7 +79,6 @@ void jit_concat_t<data_type>::execute_forward() {
         p.nb_ic = reinterpret_cast<const int *>(nb_ic_);
         p.dst = reinterpret_cast<void *>(dst + nhw * jcp.oc);
         kernel_->jit_ker(&p);
-        //dummy_kernel(&p);
         nd_iterator_step(n, jcp.bs, h, jcp.h, w, jcp.w);
       }
     }

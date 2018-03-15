@@ -104,7 +104,6 @@ struct jit_concat_t: public cpu_primitive_t {
 
 private:
   void execute_forward();
-  void dummy_kernel(jit_concat_call_s *p);
   pd_t conf_;
   jit_avx512_concat_kernel *kernel_;
 
