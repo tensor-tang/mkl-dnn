@@ -711,6 +711,7 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
 
 static void test_concat(bool with_relu = false) {
   std::unique_ptr<primitive> fwd_concat, fwd_relu;
+  std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
   std::vector<primitive> pp_concat, pp_relu;  // pipeline
 
   // below is input
@@ -766,13 +767,19 @@ static void test_concat(bool with_relu = false) {
   pp_concat.push_back(*fwd_concat);
 
   if (with_relu) {
-
+    // add relu
+    relu_pd = get_relu_pd(dst_desc);
+    fwd_relu.reset(new eltwise_forward(*relu_pd, dst, dst));
+    pp_relu.clear();
+    pp_relu.push_back(*fwd_relu);
   }
 
   // cal time
   for (auto i = 0; i < burning_iter; ++i) {
     stream(stream::kind::eager).submit(pp_concat).wait();
-    //stream(stream::kind::eager).submit(fwd_relu).wait();
+    if (with_relu) {
+      stream(stream::kind::eager).submit(pp_relu).wait();
+    }
   }
 
   auto get_current_ms = []() -> double {
@@ -781,21 +788,19 @@ static void test_concat(bool with_relu = false) {
     return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
   };
 
-  auto t_start = get_current_ms();
   double sum_concat = 0;
   double sum_relu = 0;
-  
+  auto t_start = get_current_ms();
   for (auto i = 0; i < iter; ++i) {
     auto s1 = get_current_ms();
     stream(stream::kind::eager).submit(pp_concat).wait();
     auto s2 = get_current_ms();
-    //stream(stream::kind::eager).submit(pp1x1).wait();
-    //auto s3 = get_current_ms();
+    stream(stream::kind::eager).submit(pp_relu).wait();
+    auto s3 = get_current_ms();
     sum_concat += (s2 - s1);
-    //sum_relu += (s3 - s2);
+    sum_relu += (s3 - s2);
   }
   auto t_stop = get_current_ms();
-
 
   std::cout << "In";
   for (size_t i = 0; i < src_dims.size(); i++) {
@@ -807,11 +812,13 @@ static void test_concat(bool with_relu = false) {
 
   std::cout << "Concat";
   if (with_relu) {
+    std::cout << " + ReLU";
   }
-
-  std::cout << "avg time ("
-  << sum_concat / (double)iter << "): "
-  << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+  std::cout << " avg time (" << sum_concat / (double)iter;
+  if (with_relu) {
+    std::cout << " + " << sum_relu / (double)iter;
+  }
+  std::cout << "): " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
 }
 
 static void usage() {
@@ -894,6 +901,7 @@ int main(int argc, char **argv) {
       "1x1+relu",
       "reorder",
       "concat",
+      "concat+relu",
       "test_load_data"
       ));
   }
@@ -961,6 +969,8 @@ int main(int argc, char **argv) {
       test_load_data(cds);
     } else if (func_option == "concat") {
       test_concat(false);
+    } else if (func_option == "concat+relu") {
+      test_concat(true);
     } else {  // reoder
       test_reorder();
     }
