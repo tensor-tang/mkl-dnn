@@ -709,6 +709,111 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
   << (t_stop - t_start) / (double) iter << " ms" << std::endl;
 }
 
+static void test_concat(bool with_relu = false) {
+  std::unique_ptr<primitive> fwd_concat, fwd_relu;
+  std::vector<primitive> pp_concat, pp_relu;  // pipeline
+
+  // below is input
+  using dtype = s32;
+  int concat_dimension = 1;
+  memory::format fmt = memory::format::nhwc;
+  // note: src dims always is nchw format, only data layout can be nhwc
+  std::vector<memory::dims> src_dims = {
+    {4, 96, 224, 224},
+    {4, 256, 224, 224}};
+
+  // cal dst dims
+  int oc = src_dims[0][concat_dimension];
+  assert(src_dims[0].size() == 4);
+  for (size_t i = 1; i < src_dims.size(); i++) {
+    assert(src_dims[0].size() == src_dims[i].size());
+    for (size_t dim = 0; dim < src_dims[i].size(); ++dim) {
+      if (dim == (size_t)concat_dimension) {
+        oc += src_dims[i][dim];
+      } else {
+        assert(src_dims[i][dim] == src_dims[0][dim]);
+      }
+    }
+  }
+  memory::dims dst_dims = {src_dims[0][0], oc, src_dims[0][2], src_dims[0][3]};
+  memory::data_type data_type = data_traits<dtype>::data_type;
+
+  // allocate srcs memory
+  std::vector<memory::primitive_desc> srcs_pd;
+  std::vector<memory> srcs;
+  for (size_t i = 0; i < src_dims.size(); ++i) {
+    auto desc = memory::desc(src_dims[i], data_type, fmt);
+    auto mpd = memory::primitive_desc(desc, eng);
+    auto src_memory = memory(mpd);
+    //const size_t sz = src_memory.get_primitive_desc().get_size() / sizeof(data_t);
+    //fill_data<data_t>(sz, (data_t *)src_memory.get_data_handle());
+    srcs_pd.push_back(mpd);
+    srcs.push_back(src_memory);
+  }
+
+  // dst memory
+  auto dst_desc = memory::desc(dst_dims, data_type, fmt);
+  auto concat_pd = concat::primitive_desc(dst_desc, concat_dimension, srcs_pd);
+  auto dst = memory(concat_pd.dst_primitive_desc());
+
+  // concat
+  std::vector<primitive::at> inputs;
+  for (size_t i = 0; i < srcs.size(); i++) {
+      inputs.push_back(srcs[i]);
+  }
+  fwd_concat.reset(new concat(concat_pd, inputs, dst));
+  pp_concat.clear();
+  pp_concat.push_back(*fwd_concat);
+
+  if (with_relu) {
+
+  }
+
+  // cal time
+  for (auto i = 0; i < burning_iter; ++i) {
+    stream(stream::kind::eager).submit(pp_concat).wait();
+    //stream(stream::kind::eager).submit(fwd_relu).wait();
+  }
+
+  auto get_current_ms = []() -> double {
+    struct timeval time;
+    gettimeofday(&time, NULL);
+    return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
+  };
+
+  auto t_start = get_current_ms();
+  double sum_concat = 0;
+  double sum_relu = 0;
+  
+  for (auto i = 0; i < iter; ++i) {
+    auto s1 = get_current_ms();
+    stream(stream::kind::eager).submit(pp_concat).wait();
+    auto s2 = get_current_ms();
+    //stream(stream::kind::eager).submit(pp1x1).wait();
+    //auto s3 = get_current_ms();
+    sum_concat += (s2 - s1);
+    //sum_relu += (s3 - s2);
+  }
+  auto t_stop = get_current_ms();
+
+
+  std::cout << "In";
+  for (size_t i = 0; i < src_dims.size(); i++) {
+    auto& dims = src_dims[i];
+    printf("(%d, %d, %d, %d) ", dims[0], dims[1], dims[2], dims[3]);
+  }
+  printf("==> Out(%d, %d, %d, %d)\n", dst_dims[0], dst_dims[1], dst_dims[2], dst_dims[3]);
+
+
+  std::cout << "Concat";
+  if (with_relu) {
+  }
+
+  std::cout << "avg time ("
+  << sum_concat / (double)iter << "): "
+  << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+}
+
 static void usage() {
   std::cout << "./test_fuse function_options test_case_idx(0/1/2/3) buring_iter(1~1000) valid_iter(1~1000)"<< std::endl;
   std::cout << "function_options:\n e.g.\n" << std::endl;
@@ -788,7 +893,9 @@ int main(int argc, char **argv) {
       "1x1_relu",
       "1x1+relu",
       "reorder",
-      "test_load_data"));
+      "concat",
+      "test_load_data"
+      ));
   }
   if (one_of(func_option, "reorder", "test_load_data") && argc >= 3) {
     std::cout << "Warnning: \" " << argv[2] <<
@@ -823,8 +930,10 @@ int main(int argc, char **argv) {
   }
 
   auto &pm = cds[test_case_idx];
-  printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
-    pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
+  if (!(one_of(func_option, "concat", "concat_relu", "concat+relu"))) {
+    printf("In(%d, %d, %d, %d) ==> Out(%d, %d, %d, %d), kernel(%d, %d)\n",
+      pm.mb, pm.ic, pm.ih, pm.iw, pm.mb, pm.oc, pm.oh, pm.ow, pm.kh, pm.kw);  // params
+  }
   try {
     if (func_option == "3x3") {
       test_conv("3x3", cds, test_case_idx, false, false, with_bias);
@@ -850,6 +959,8 @@ int main(int argc, char **argv) {
       test_conv3x3_1x1(cds, test_case_idx, true, true, false, true, with_bias);
     } else if (func_option == "test_load_data") {
       test_load_data(cds);
+    } else if (func_option == "concat") {
+      test_concat(false);
     } else {  // reoder
       test_reorder();
     }
