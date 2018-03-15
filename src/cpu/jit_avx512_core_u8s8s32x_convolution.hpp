@@ -173,10 +173,10 @@ struct _jit_avx512_core_u8s8s32x_convolution_fwd_t : public cpu_primitive_t {
 
 #ifdef LOAD_SAVE_DATA
         std::string filename;
-        filename = "fuse1x1_dst_";
+        filename = "conv3x3relu_fused_1x1relu_dst_";
         filename += std::to_string(case_id);
         filename += ".txt";
-        std::cout << "Save fused 1x1 relu dst " << filename << std::endl;
+        std::cout << "Save conv3x3 fused 1x1 relu dst " << filename << std::endl;
         save_nhwc<int32_t>(filename.c_str(), out1x1_, conf_.jcp_.mb, conf_.jcp_.oh, conf_.jcp_.ow, conf_.jcp_.oc1x1);
 #endif
         free(ws1x1_);

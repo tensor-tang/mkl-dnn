@@ -157,11 +157,20 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
         vaddps(zmm, zmm, zmm_bias);
     vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales1x1, scale_offset)); 
     // out format is nhw,c/16,16o
-    int offset = jcp.typesize_acc * (jw * jcp.oc1x1 + ocb1x1 * jcp.oc1x1_block);
+    int offset = jcp.typesize_out * (jw * jcp.oc1x1 + ocb1x1 * jcp.oc1x1_block);
     auto addr = EVEX_compress_addr(reg_ptr_out1x1, offset);
 
     // relu
     vmaxps(zmm, zmm_zero, zmm);
+
+    if (jcp.dst_dt != data_type::f32) {
+      if (attr_.round_mode_ == round_mode::nearest)
+          vcvtps2dq(zmm | T_rn_sae, zmm);
+      else if (attr_.round_mode_ == round_mode::down)
+          vcvtps2dq(zmm | T_rd_sae, zmm);
+      else
+          assert(!"unimplemented");
+    }
 
     // 1x1 dst always s32
     vmovups(addr, zmm);
@@ -292,19 +301,22 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
     // reg sum_scale, scales, bias, channel are avaible now
     mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);
     mov(reg_ptr_acc1x1, ptr[param1 + GET_OFF(acc1x1)]);
-    mov(reg_ptr_out1x1, ptr[param1 + GET_OFF(out1x1)]);
     // TODO: need add current ow offset at reg_ptr_acc1x1 and reg_ptr_out1x1
+    // reg_ptr_acc1x1 shoudl add ow offset * 16;
+
     int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
     int out1x1_shift = jcp.typesize_out * jcp.oc1x1_block;  // out format is nhw,c/16,16o
     // compute all oc3x3 for all ur_w
+    
     for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
       prepare_1x1output(ur_w);
+      const int wei_oc_offset = oc1x1_idx * jcp.oc * jcp.oc_block;
       // compute 16o of 1x1conv for all ur_w
       for (int k = 0; k < nb_oc_block; ++k) {
         for (int i4 = 0; i4 < oc_block / 4; ++i4) {
           // load 1x1 wei: 16o4i *s8 at (oc1x1_idx, ic1x1/4)
           // [oc/16][ic/4][16o][4i]
-          int wei_offset = jcp.typesize_in * (oc1x1_idx * jcp.oc * jcp.oc_block + (i4 + k *4) * 64);
+          int wei_offset = jcp.typesize_in * (wei_oc_offset + (i4 + k *4) * 64);
           vmovups(zmm_1x1_wei, EVEX_compress_addr(reg_ptr_wei1x1, wei_offset));
           for (int jw = 0; jw < ur_w; ++jw) {
             if (i4 == 0 ) {
@@ -320,8 +332,6 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
 
       store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
       add(reg_ptr_acc1x1, acc1x1_shift);
-      // TODO: why??? out add
-      //add(reg_ptr_out1x1, out1x1_shift); // out format is nhw,c/16,16o 
     }
 #endif
     jmp(l_ret, T_NEAR);
@@ -428,10 +438,14 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         * jcp.ic * jcp.ngroups;
     int inp_shift = jcp.typesize_in *
                         (jcp.ur_w * jcp.stride_w * jcp.ic * jcp.ngroups);
-    #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+    // here is for shifting ur_w
+    int out1x1_shift = jcp.typesize_out * (jcp.ur_w * jcp.oc1x1);
+    //int acc1x1_shift = jcp.typesize_acc * (jcp.ur_w * jcp.oc1x1_block);  // acc1x1 format is oc/16, ow, 16
+#else
     int out_shift = jcp.typesize_out *
                         (jcp.ur_w * jcp.oc * jcp.ngroups);
-    #endif
+#endif
     int acc_shift = jcp.typesize_acc *
                         (jcp.ur_w * jcp.oc_block * jcp.nb_oc_blocking);
 
@@ -443,9 +457,12 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
     vpbroadcastw(zmm_one, _t);
 
     mov(reg_inp, ptr[param1 + GET_OFF(src)]);
-    #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+    mov(reg_ptr_out1x1, ptr[param1 + GET_OFF(out1x1)]);
+    //mov(reg_ptr_acc1x1, ptr[param1 + GET_OFF(acc1x1)]);
+#else
     mov(reg_out, ptr[param1 + GET_OFF(dst)]);
-    #endif
+#endif
     mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
     mov(reg_kh, ptr[param1 + GET_OFF(kh_padding)]);
     mov(reg_acc_s32, ptr[param1 + GET_OFF(acc_s32)]);
@@ -464,9 +481,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
         if (n_oi == 0) {
             compute_loop(jcp.ur_w, jcp.l_pad, r_pad1);
             add(reg_inp, inp_shift_pad);
-            #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+            add(reg_ptr_out1x1, out1x1_shift);
+#else
             add(reg_out, out_shift);
-            #endif
+#endif
             add(reg_acc_s32, acc_shift);
             if (jcp.ur_w_tail != 0) {
                 compute_loop(jcp.ur_w_tail, 0, r_pad);
@@ -475,9 +494,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (jcp.l_pad > 0) {
                 compute_loop(jcp.ur_w, jcp.l_pad, 0);
                 add(reg_inp, inp_shift_pad);
-                #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+                add(reg_ptr_out1x1, out1x1_shift);
+#else
                 add(reg_out, out_shift);
-                #endif
+#endif
                 add(reg_acc_s32, acc_shift);
 
                 inc(reg_oi);
@@ -489,9 +510,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
                 L(ow_loop_label); {
                     compute_loop(jcp.ur_w, 0, 0);
                     add(reg_inp, inp_shift);
-                    #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+                    add(reg_ptr_out1x1, out1x1_shift);
+#else
                     add(reg_out, out_shift);
-                    #endif
+#endif
                     add(reg_acc_s32, acc_shift);
 
                     inc(reg_oi);
@@ -502,9 +525,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::generate()
             if (r_pad1 > 0) {
                 compute_loop(jcp.ur_w, 0, r_pad1);
                 add(reg_inp, inp_shift);
-                #ifndef FUSE_CONV
+#ifdef FUSE_CONV
+                add(reg_ptr_out1x1, out1x1_shift);
+#else
                 add(reg_out, out_shift);
-                #endif
+#endif
                 add(reg_acc_s32, acc_shift);
             }
             if (jcp.ur_w_tail != 0) {
