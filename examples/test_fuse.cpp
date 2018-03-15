@@ -709,18 +709,18 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
   << (t_stop - t_start) / (double) iter << " ms" << std::endl;
 }
 
-static void test_concat(bool with_relu = false) {
+template <typename dtype>  // should be one of s32, s8, u8
+void test_concat(bool with_relu = false) {
   std::unique_ptr<primitive> fwd_concat, fwd_relu;
   std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
   std::vector<primitive> pp_concat, pp_relu;  // pipeline
 
   // below is input
-  using dtype = s32;
   int concat_dimension = 1;
   memory::format fmt = memory::format::nhwc;
   // note: src dims always is nchw format, only data layout can be nhwc
   std::vector<memory::dims> src_dims = {
-    {4, 96, 224, 224},
+    {4, 128, 224, 224},  // only 64x can run on s8/u8, and 16x on s32
     {4, 256, 224, 224}};
 
   // cal dst dims
@@ -795,10 +795,12 @@ static void test_concat(bool with_relu = false) {
     auto s1 = get_current_ms();
     stream(stream::kind::eager).submit(pp_concat).wait();
     auto s2 = get_current_ms();
-    stream(stream::kind::eager).submit(pp_relu).wait();
-    auto s3 = get_current_ms();
     sum_concat += (s2 - s1);
-    sum_relu += (s3 - s2);
+    if (with_relu) {
+      stream(stream::kind::eager).submit(pp_relu).wait();
+      auto s3 = get_current_ms();
+      sum_relu += (s3 - s2);
+    }
   }
   auto t_stop = get_current_ms();
 
@@ -909,12 +911,17 @@ int main(int argc, char **argv) {
     std::cout << "Warnning: \" " << argv[2] <<
       " \" and after inputs are invalid when test_reorder or test_load_data." << std::endl;
   }
-  
+  std::string concat_dtype("s32");  // default s32
   if (argc >= 3) {
-    std::string in(argv[2]);
-    test_case_idx = std::stoi(in);
-    CHECK(test_case_idx >= 0 && test_case_idx < (int)(sizeof(cds)/sizeof(cds[0])));
+    if (!(one_of(func_option, "concat", "concat+relu", "concat_relu"))) {
+      std::string in(argv[2]);
+      test_case_idx = std::stoi(in);
+      CHECK(test_case_idx >= 0 && test_case_idx < (int)(sizeof(cds)/sizeof(cds[0])));
+    } else {
+      concat_dtype = std::string(argv[2]);
+    }
   }
+  CHECK(one_of(concat_dtype, "s32", "s8", "u8"));
   if (argc >= 4) {
     std::string in(argv[3]);
     burning_iter = std::stoi(in);
@@ -967,10 +974,19 @@ int main(int argc, char **argv) {
       test_conv3x3_1x1(cds, test_case_idx, true, true, false, true, with_bias);
     } else if (func_option == "test_load_data") {
       test_load_data(cds);
-    } else if (func_option == "concat") {
-      test_concat(false);
-    } else if (func_option == "concat+relu") {
-      test_concat(true);
+    } else if (func_option.compare(0, 6, "concat") == 0) {
+      // the first 6 is concat
+      bool with_relu = false;
+      if (func_option.compare(func_option.length() - 4, 4, "relu") == 0) {
+        with_relu = true;
+      }
+      if (concat_dtype == "s32") {
+        test_concat<s32>(with_relu);
+      } else if (concat_dtype == "s8") {
+        test_concat<s8>(with_relu);
+      } else if (concat_dtype == "u8") {
+        test_concat<u8>(with_relu);
+      }
     } else {  // reoder
       test_reorder();
     }

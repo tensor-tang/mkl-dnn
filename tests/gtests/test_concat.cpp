@@ -231,13 +231,13 @@ INSTANTIATE_TEST_CASE_P(TestConcat, concat_test_s32, ::testing::Values(
     {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
-    {{2, 256, 3, 4}, {2, 256, 3, 4}}, {2, 512, 3, 4}},
+    {{2, 128, 3, 4}, {2, 256, 3, 4}}, {2, 384, 3, 4}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
     {{2, 256, 6, 6}, {2, 256, 6, 6}}, {2, 512, 6, 6}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
-    {{2, 64, 1, 1}, {2, 96, 1, 1}}, {2, 160, 1, 1}}
+    {{2, 64, 1, 1}, {2, 128, 1, 1}}, {2, 192, 1, 1}}
     ));
 
 INSTANTIATE_TEST_CASE_P(TestConcat, concat_test_u8, ::testing::Values(
@@ -256,12 +256,12 @@ INSTANTIATE_TEST_CASE_P(TestConcat, concat_test_u8, ::testing::Values(
     {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
-    {{2, 256, 3, 4}, {2, 256, 3, 4}}, {2, 512, 3, 4}},
+    {{2, 128, 3, 4}, {2, 256, 3, 4}}, {2, 384, 3, 4}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
     {{2, 256, 6, 6}, {2, 256, 6, 6}}, {2, 512, 6, 6}},
     concat_test_params{engine::kind::cpu, 1,
     {memory::format::nhwc, memory::format::nhwc}, memory::format::nhwc,
-    {{2, 64, 1, 1}, {2, 96, 1, 1}}, {2, 160, 1, 1}}
+    {{2, 64, 1, 1}, {2, 128, 1, 1}}, {2, 192, 1, 1}}
     ));
 }
