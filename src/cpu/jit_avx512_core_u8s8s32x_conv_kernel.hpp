@@ -68,14 +68,21 @@ private:
 
     reg64_t reg_inp = r8;
     reg64_t reg_ker = r9;
-    #ifndef FUSE_CONV
+#ifdef FUSE_CONV    
+    reg64_t reg_ptr_out1x1 = r10;  // replace gre out
+#else
     reg64_t reg_out = r10;  // when fuse 1x1, do not need 3x3 out
-    #endif
+#endif
     reg64_t aux_reg_inp = r11;
     reg64_t reg_ptr_sum_scale = r11;
     reg64_t aux_reg_ker = r12;
     reg64_t reg_acc_s32 = r13;
+
+#ifdef FUSE_CONV
+    reg64_t reg_scratch = r15;  // the r14 is used for acc1x1 for whole life
+#else
     reg64_t reg_scratch = r14;
+#endif
     reg64_t reg_kj   = rax;
     reg64_t reg_ptr_scales = rax;
     reg64_t reg_oi   = rbx;
@@ -95,8 +102,9 @@ private:
 
 #ifdef FUSE_CONV
     // for conv 1x1
-    reg64_t reg_ptr_out1x1 = r10;  // replace gre out
-    reg64_t reg_ptr_acc1x1 = r14;  // use r14 which should always be used in kernel // use aux_reg_ker, used only in compute_loop
+    reg64_t reg_ptr_acc1x1 = r14;  // use r14 which should always be used in kernel
+    reg64_t aux_reg_ptr_acc1x1 = r11; // this is a tmp_reg for acc1x1 add offset // use aux_reg_ker, used only in compute_loop
+
     reg64_t reg_ptr_bia1x1 = rdx;  // use reg_bias, can use channel reg either i think
     reg64_t reg_ptr_wei1x1 = r11;  // used reg_ptr_sum_scale reg
     reg64_t reg_ocb3x3 = r15;  // use reg_channel
