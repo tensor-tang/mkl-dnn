@@ -137,8 +137,8 @@ struct _jit_avx512_core_u8s8s32x_convolution_fwd_t : public cpu_primitive_t {
                 nthreads * ws_per_thread_ * sizeof(acc_data_t), 64);
 #ifdef FUSE_CONV
         // conv acc 1x1
-        // acc format (oc/16, ow, 16o)
-        ws1x1_per_thread_ = conf_.jcp_.ow * conf_.jcp_.oc1x1;
+        // acc format (h, oc/16, ow, 16o)
+        ws1x1_per_thread_ = conf_.jcp_.oh * conf_.jcp_.ow * conf_.jcp_.oc1x1;
         ws1x1_ = (acc_data_t *)malloc(
                 nthreads * ws1x1_per_thread_ * sizeof(acc_data_t), 64);
 

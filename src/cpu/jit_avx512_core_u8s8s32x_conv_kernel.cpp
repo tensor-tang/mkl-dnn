@@ -123,7 +123,11 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
 
   Label l_update_acc, l_ret;;
   mov(reg_ocb3x3, ptr[param1 + GET_OFF(ocb3x3)]);
-  int adjusment = jcp.nb_oc1x1 - 1;
+  int adjusment = jcp.nb_oc - 1
+                    - (jcp.nb_oc_blocking <= 1)
+                      ? 0
+                      : jcp.nb_oc_blocking;
+
   cmp(reg_ocb3x3, adjusment); // LAST channel
   jl(l_update_acc, T_NEAR);
 
@@ -184,6 +188,54 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
     vmovups(EVEX_compress_addr(aux_reg_ptr_acc1x1, offset), zmm);
   }
   L(l_ret);
+}
+
+void jit_avx512_core_u8s8s32x_fwd_kernel::compute1x1_loop(int ur_w) {
+  ///////////////// conv 1x1 /////////////////////////////////////////
+  // this lamda function should be the same with compute_loop
+  auto compute = [=](Zmm vreg_acc, Zmm vreg_wei, Zmm vreg_src) {
+      if (jcp.ver == ver_vnni) {
+          vpdpbusd(vreg_acc, vreg_src, vreg_wei);
+      } else {
+          vpmaddubsw(zmm_tmp, vreg_src, vreg_wei);
+          vpmaddwd(zmm_tmp, zmm_tmp, zmm_one);
+          vpaddd(vreg_acc, vreg_acc, zmm_tmp);
+      }
+  };
+  int oc_block = jcp.oc_block;
+  int nb_oc_block = jcp.nb_oc_blocking;
+  
+  // reg sum_scale, scales, bias, channel are avaible now
+  mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);
+  mov(aux_reg_ptr_acc1x1, reg_ptr_acc1x1);
+  
+  int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
+  int out1x1_shift = jcp.typesize_out * jcp.oc1x1_block;  // out format is nhw,c/16,16o
+  // compute all oc3x3 for all ur_w
+  for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
+    prepare_1x1output(ur_w);
+    const int wei_oc_offset = oc1x1_idx * jcp.oc * jcp.oc_block;
+    // compute 16o of 1x1conv for all ur_w
+    for (int k = 0; k < nb_oc_block; ++k) {
+      for (int i4 = 0; i4 < oc_block / 4; ++i4) {
+        // load 1x1 wei: 16o4i *s8 at (oc1x1_idx, ic1x1/4)
+        // [oc/16][ic/4][16o][4i]
+        int wei_offset = jcp.typesize_in * (wei_oc_offset + (i4 + k *4) * 64);
+        vmovups(zmm_1x1_wei, EVEX_compress_addr(reg_ptr_wei1x1, wei_offset));
+        for (int jw = 0; jw < ur_w; ++jw) {
+          if (i4 == 0 ) {
+            movd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
+          } else {
+            pextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
+          }
+          vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
+          compute(zmm_1x1out(jw, nb_oc_block), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
+        }
+      }
+    }
+    store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
+    add(aux_reg_ptr_acc1x1, acc1x1_shift);
+  }
 }
 #endif
 
@@ -287,54 +339,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
     }
 
 #ifdef FUSE_CONV
-    ///////////////// conv 1x1 /////////////////////////////////////////
-    // this lamda function should be the same with compute_loop
-    auto compute = [=](Zmm vreg_acc, Zmm vreg_wei, Zmm vreg_src) {
-        if (jcp.ver == ver_vnni) {
-            vpdpbusd(vreg_acc, vreg_src, vreg_wei);
-        } else {
-            vpmaddubsw(zmm_tmp, vreg_src, vreg_wei);
-            vpmaddwd(zmm_tmp, zmm_tmp, zmm_one);
-            vpaddd(vreg_acc, vreg_acc, zmm_tmp);
-        }
-    };
-    int oc_block = jcp.oc_block;
-    int nb_oc_block = jcp.nb_oc_blocking;
-
-    // reg sum_scale, scales, bias, channel are avaible now
-    mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);
-    mov(aux_reg_ptr_acc1x1, reg_ptr_acc1x1);
-
-
-    int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
-    int out1x1_shift = jcp.typesize_out * jcp.oc1x1_block;  // out format is nhw,c/16,16o
-    // compute all oc3x3 for all ur_w
-    
-    for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
-      prepare_1x1output(ur_w);
-      const int wei_oc_offset = oc1x1_idx * jcp.oc * jcp.oc_block;
-      // compute 16o of 1x1conv for all ur_w
-      for (int k = 0; k < nb_oc_block; ++k) {
-        for (int i4 = 0; i4 < oc_block / 4; ++i4) {
-          // load 1x1 wei: 16o4i *s8 at (oc1x1_idx, ic1x1/4)
-          // [oc/16][ic/4][16o][4i]
-          int wei_offset = jcp.typesize_in * (wei_oc_offset + (i4 + k *4) * 64);
-          vmovups(zmm_1x1_wei, EVEX_compress_addr(reg_ptr_wei1x1, wei_offset));
-          for (int jw = 0; jw < ur_w; ++jw) {
-            if (i4 == 0 ) {
-              movd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
-            } else {
-              pextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
-            }
-            vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
-            compute(zmm_1x1out(jw, nb_oc_block), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
-          }
-        }
-      }
-
-      store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
-      add(aux_reg_ptr_acc1x1, acc1x1_shift);
-    }
+    compute1x1_loop(ur_w);
 #endif
     jmp(l_ret, T_NEAR);
 

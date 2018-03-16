@@ -153,6 +153,7 @@ private:
     void prepare_output(int ur_w);
     void store_output(int ur_w);
 #ifdef FUSE_CONV
+    void compute1x1_loop(int ur_w);
     void prepare_1x1output(int ur_w);
     void store_1x1output(int ur_w, int ocb1x1);
 #endif

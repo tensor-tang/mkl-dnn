@@ -86,6 +86,7 @@ execute_forward()
         size_t src_h_stride = src_d.blk_off(0, 0, 1);
 #ifdef FUSE_CONV
         size_t out1x1_h_stride = jcp.ow * jcp.oc1x1;
+        size_t acc1x1_h_stride = jcp.ow * jcp.oc1x1;
 #else
         size_t dst_h_stride = dst_d.blk_off(0, 0, 1);
 #endif
@@ -135,7 +136,8 @@ execute_forward()
 
             auto bias_w = bias ? bias + (bias_d.blk_off(g_oc) * bia_dt_size) : 0;
 #ifdef FUSE_CONV
-            auto out1x1_w = out1x1_ + n*(jcp.oh*wht_h_stride) + oh_s*wht_h_stride;  // nhwc
+            auto out1x1_w = out1x1_ + n*(jcp.oh*out1x1_h_stride) + oh_s*out1x1_h_stride;  // nhwc
+            auto acc1x1_w = ws1x1_l + oh_s*acc1x1_h_stride;
 #else
             auto dst_w = dst + dst_d.blk_off(n, g_oc, oh_s);
 #endif
@@ -150,7 +152,8 @@ execute_forward()
             for (int icc = 0; icc < ic_chunks; ++icc) {
                 auto src_c = src_w;
 #ifdef FUSE_CONV
-                auto out1x1_c = out1x1_w;;
+                auto out1x1_c = out1x1_w;
+                auto acc1x1_c = acc1x1_w;
 #else
                 auto dst_c = dst_w;
 #endif
@@ -176,7 +179,7 @@ execute_forward()
                     p.ocb3x3 = ocb;
                     p.wei1x1 = wei1x1_c; // oc1x1/16,ic1x1/4, 16o,4i
                     p.bia1x1 = bia1x1_;   // bias1x1 only support s32 yet
-                    p.acc1x1 = ws1x1_l;  // acc1x1 format is (oc1x1/16, ow, 16o), ow is in kernel, so do not need offset
+                    p.acc1x1 = acc1x1_c;  // acc1x1 format is (oh, oc1x1/16, ow, 16o), ow is in kernel, so do not need offset
                     p.out1x1 = out1x1_c; // shoud have ow offset in count
                     p.scales1x1 = scales1x1;  // only use one as 3x3 scale, should be fine 
 #else
@@ -187,6 +190,7 @@ execute_forward()
                     src_c += src_h_stride * jcp.stride_h;
 #ifdef FUSE_CONV
                     out1x1_c += out1x1_h_stride;
+                    acc1x1_c += acc1x1_h_stride;
 #else
                     dst_c += dst_h_stride;
 #endif
