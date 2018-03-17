@@ -131,7 +131,8 @@ execute_forward()
 #endif
             int ocb = occ * jcp.nb_oc_blocking;
 #ifdef FUSE_CONV
-            auto wei1x1_c = wei1x1_ + ocb * 4 * 64; // format: oc1x1/16,ic1x1/4, 16o,4i
+            // format is OIhw4i16o4i. [oc1x1/16,ic1x1/16, 4i,16o,4i]
+            auto wei1x1_c = wei1x1_ + ocb * 4 * 64;
 #endif
             int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
 

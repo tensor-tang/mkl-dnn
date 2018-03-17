@@ -856,10 +856,10 @@ int main(int argc, char **argv) {
   // TODO: all pre-load data would not work, new u8 conv kernel has different weight format!!
     { // small one
       2, 1,  // bs, gp
-      16, 16, 16,  // ic, ih, iw
-      32, 14, 14,  // oc, oh, ow
+      128, 5, 5,  // ic, ih, iw
+      256, 5, 5,  // oc, oh, ow
       3, 3,  // kh, kw
-      0, 0,  // ph, pw
+      1, 1,  // ph, pw
       1, 1   // sh, sw
     },
     {

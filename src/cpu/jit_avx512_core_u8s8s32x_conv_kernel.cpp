@@ -204,25 +204,28 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::compute1x1_loop(int ur_w) {
   // reg sum_scale, scales, bias, channel are avaible now
   mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);  // ic1x1 offsetted
   mov(aux_reg_ptr_acc1x1, reg_ptr_acc1x1); // oh, ow offsetted. 
-  
   int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
+  int wei1x1_shift = jcp.typesize_in* 4 * jcp.oc1x1_block;  // == 64*s8
   // compute all oc3x3 for all ur_w
   for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
     prepare_1x1output(ur_w);
-    // [oc/16][ic/4][16o][4i]
-    const int wei_oc_offset = oc1x1_idx * jcp.oc * jcp.oc1x1_block;
+    // 1x1 weight format is OIhw4i16o4i
+    // [oc1x1/16,ic1x1/16, 4i,16o,4i]
+    const int wei_oc_offset = jcp.typesize_in * (oc1x1_idx * jcp.oc * jcp.oc1x1_block);
+    mov(aux_reg_ptr_wei1x1, reg_ptr_wei1x1);
+    add(aux_reg_ptr_wei1x1, wei_oc_offset);
     // compute 16o of 1x1conv for all ur_w
     for (int k = 0; k < jcp.nb_oc_blocking; ++k) {
       for (int i4 = 0; i4 < 4; ++i4) {  // jcp.oc_block / 4
-        // load 1x1 wei: 16o4i *s8 at (oc1x1_idx, ic1x1/4)
-        // [oc/16][ic/4][16o][4i]
-        int wei_offset = jcp.typesize_in * (wei_oc_offset + (i4 + k *4) * 64);
-        vmovups(zmm_1x1_wei, EVEX_compress_addr(reg_ptr_wei1x1, wei_offset));
+        // load 1x1 wei, load 16o4i *s8 one, the format is OIhw4i16o4i
+        // [oc1x1/16,ic1x1/16, 4i,16o,4i]
+        vmovups(zmm_1x1_wei, EVEX_compress_addr(aux_reg_ptr_wei1x1, 0));
+        add(aux_reg_ptr_wei1x1, wei1x1_shift);
         for (int jw = 0; jw < ur_w; ++jw) {
           if (i4 == 0 ) {
-            movd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
+            vmovd(reg_1x1_src_4u8, xmm_out(jw, k));  // get lower 4*u8
           } else {
-            pextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
+            vpextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
           }
           vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
           compute(zmm_1x1out(jw, jcp.nb_oc_blocking), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
@@ -320,7 +323,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_output(int ur_w)
                     assert(!"unimplemented");
             }
 #ifdef FUSE_CONV
-            // always convert to u8
+            // always convert to u8, as src of 1x1 conv
             vpmovusdb(xmm, zmm);
 #else
             switch (jcp.dst_dt) {

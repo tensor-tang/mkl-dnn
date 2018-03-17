@@ -103,7 +103,8 @@ private:
 #ifdef FUSE_CONV
     // for conv 1x1
     reg64_t reg_ptr_acc1x1 = r14;  // use r14 which should always be used in kernel
-    reg64_t aux_reg_ptr_acc1x1 = r11; // this is a tmp_reg for acc1x1 add offset // use aux_reg_ker, used only in compute_loop
+    reg64_t aux_reg_ptr_acc1x1 = r11;  // this is a tmp_reg for acc1x1 add offset
+    reg64_t aux_reg_ptr_wei1x1 = r12;  // use aux_reg_ker, used only in 3x3 compute_loop
 
     reg64_t reg_ptr_bia1x1 = rdx;  // use reg_bias, can use channel reg either i think
     reg64_t reg_ptr_wei1x1 = r11;  // used reg_ptr_sum_scale reg
