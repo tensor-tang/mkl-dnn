@@ -82,6 +82,7 @@ execute_forward()
 #ifdef FUSE_CONV
         auto ws1x1_l = ws1x1_ + ithr * ws1x1_per_thread_;
 #endif
+
         // blk_off follo format: n, g, h, w, c
         size_t src_h_stride = src_d.blk_off(0, 0, 1);
 #ifdef FUSE_CONV
@@ -122,12 +123,18 @@ execute_forward()
 #endif
 
         while (start < end) {
+#ifdef FUSE_CONV
+          auto out1x1_w = out1x1_ + n*(jcp.oh*out1x1_h_stride) + oh_s*out1x1_h_stride;  // nhwc
+          auto acc1x1_w = ws1x1_l + oh_s*acc1x1_h_stride;
+          auto scales1x1 = &oscales.scales_[0];
           for (int occ = 0; occ < oc_chunks; ++occ) {
+#endif
             int ocb = occ * jcp.nb_oc_blocking;
 #ifdef FUSE_CONV
             auto wei1x1_c = wei1x1_ + ocb * 4 * 64; // format: oc1x1/16,ic1x1/4, 16o,4i
 #endif
             int g_oc = (g * jcp.nb_oc + ocb) * jcp.oc_block;
+
             int g_ic = g * jcp.nb_ic * jcp.oc_block;
 
             int work_rem = end - start;
@@ -135,19 +142,13 @@ execute_forward()
             int oh_e = oh_s + work_rem > jcp.oh ? jcp.oh : oh_s + work_rem;
 
             auto bias_w = bias ? bias + (bias_d.blk_off(g_oc) * bia_dt_size) : 0;
-#ifdef FUSE_CONV
-            auto out1x1_w = out1x1_ + n*(jcp.oh*out1x1_h_stride) + oh_s*out1x1_h_stride;  // nhwc
-            auto acc1x1_w = ws1x1_l + oh_s*acc1x1_h_stride;
-#else
+            #ifndef FUSE_CONV
             auto dst_w = dst + dst_d.blk_off(n, g_oc, oh_s);
-#endif
+            #endif
             auto src_w = src + src_d.blk_off(n, g_ic, ih_s);
             auto wht_w = weights + wht_blk_off(weights_d, g, ocb, 0);
 
             auto scales = &oscales.scales_[jcp.is_oc_scale * g_oc];
-#ifdef FUSE_CONV
-            auto scales1x1 = &oscales.scales_[0];
-#endif
 
             for (int icc = 0; icc < ic_chunks; ++icc) {
                 auto src_c = src_w;
@@ -199,9 +200,8 @@ execute_forward()
                 src_w += jcp.ic_block * jcp.nb_ic_blocking;
                 wht_w += wht_ic_stride * jcp.nb_ic_blocking;
             }
-          }
-
 #ifdef FUSE_CONV
+          }
           if (jcp.loop_order == loop_cgn)
               nd_iterator_jump(start, end,
                 g, jcp.ngroups, n, jcp.mb, oh_s, jcp.oh);
