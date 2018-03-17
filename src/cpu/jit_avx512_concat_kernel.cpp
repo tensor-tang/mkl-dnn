@@ -39,22 +39,40 @@ void jit_avx512_concat_kernel::compute_one_input() {
   mov(reg_ptr_src_i, ptr[reg_ptr_src]);
 
   L(l_next_block); {
-    // load from dst
-    vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));
-
+    auto src_addr = EVEX_compress_addr(reg_ptr_src_i, 0);
+    auto dst_addr = EVEX_compress_addr(reg_ptr_dst, 0);
+    if (jcp.typesize == 4) {
+      // load from dst
+      vmovups(zmm_src, src_addr);
 #ifdef FUSE_CONCAT
-    // relu
-    // cvt to f32
-    vcvtdq2ps(zmm_src, zmm_src);
-    vmaxps(zmm_src, zmm_zero, zmm_src);
-    // cvt back:
-    // round_mode::nearest: T_rn_sae
-    // round_mode::down: T_rd_sae
-    vcvtps2dq(zmm_src | T_rn_sae, zmm_src);  
+      // relu
+      // cvt to f32
+      vcvtdq2ps(zmm_src, zmm_src);
+      vmaxps(zmm_src, zmm_zero, zmm_src);
+      // cvt back:
+      // round_mode::nearest: T_rn_sae
+      // round_mode::down: T_rd_sae
+      vcvtps2dq(zmm_src | T_rn_sae, zmm_src);  
 #endif
+      // save to dst
+      vmovups(dst_addr, zmm_src);
+    } else {
+      vmovups(xmm_src, src_addr);
+#ifdef FUSE_CONCAT
+      // TODO: xmm => zmm
+      vcvtdq2ps(zmm_src, zmm_src);
+      vmaxps(zmm_src, zmm_zero, zmm_src);
+      vcvtps2dq(zmm_src | T_rn_sae, zmm_src);
+      switch (jcp.dtype) {
+        case data_type::s8: vpmovsdb(xmm_src, zmm_src); break;
+        case data_type::u8: vpmovusdb(xmm_src, zmm_src); break;
+        default: assert(!"error dtype");
+      }
+#endif
+      // save to dst
+      vmovups(dst_addr, xmm_src);
+    }
 
-    // save to dst
-    vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
     add(reg_ptr_src_i, shift_c);
     add(reg_ptr_dst, shift_c);
     dec(reg_nb);
@@ -128,19 +146,23 @@ status_t jit_avx512_concat_kernel::init_conf(jit_concat_conf_t &jcp,
     return status::unimplemented;
   }
 
-  if (jcp.n_inputs > 16) {
+  if (jcp.n_inputs > 16) {  // why 16? try to remember
     return status::unimplemented;
   }
 
   jcp.dtype = dst_d.data_type();
   jcp.typesize = types::data_type_size(dst_d.data_type());
-  jcp.block = 64 / jcp.typesize;
+  if (!one_of(jcp.typesize, 1, 4)) {
+    // only s8, u8, s32, f32
+    return status::unimplemented;
+  }
+
+  // only load 16 once
+  jcp.block = 16;
   for (int i = 0; i < jcp.n_inputs; ++i) {
     const memory_desc_wrapper src_d(&src_pds[i]);
     if (src_d.dims()[1] % jcp.block != 0) {  
       // all input channels should be dividable
-      // input is s32 or float s32, channels should be 16x
-      // input is s8 or u8, then 64x
       return status::unimplemented;
     }
   }

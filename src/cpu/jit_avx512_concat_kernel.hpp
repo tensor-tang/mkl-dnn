@@ -66,6 +66,7 @@ private:
     reg64_t reg_ninputs   = r12;
     reg32_t reg_nb        = r15d;
 
+    xmm_t xmm_src  = xmm_t(30);
     zmm_t zmm_src  = zmm_t(30);
     zmm_t zmm_zero = zmm_t(31);
 
