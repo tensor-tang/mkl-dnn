@@ -43,9 +43,13 @@ void jit_avx512_concat_kernel::compute_one_input() {
     vmovups(zmm_src, EVEX_compress_addr(reg_ptr_src_i, 0));
 
     // relu
-    // note: cvt to f32? vcvtdq2ps (zmm, zmm);
-    // vmaxps(zmm_src, zmm_zero, zmm_src);
-    // note: cvt back? vcvtps2dq(zmm | T_rn_sae, zmm);
+    // cvt to f32
+    vcvtdq2ps(zmm_src, zmm_src);
+    vmaxps(zmm_src, zmm_zero, zmm_src);
+    // cvt back:
+    // round_mode::nearest: T_rn_sae
+    // round_mode::down: T_rd_sae
+    vcvtps2dq(zmm_src | T_rn_sae, zmm_src);  
 
     // save to dst
     vmovups(EVEX_compress_addr(reg_ptr_dst, 0), zmm_src);
