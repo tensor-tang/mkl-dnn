@@ -853,9 +853,10 @@ int main(int argc, char **argv) {
   int test_case_idx = 3;
   // conv desc
   test_convolution_sizes_t cds[] = {
+  // TODO: all pre-load data would not work, new u8 conv kernel has different weight format!!
     { // small one
       2, 1,  // bs, gp
-      12, 16, 16,  // ic, ih, iw
+      16, 16, 16,  // ic, ih, iw
       32, 14, 14,  // oc, oh, ow
       3, 3,  // kh, kw
       0, 0,  // ph, pw
