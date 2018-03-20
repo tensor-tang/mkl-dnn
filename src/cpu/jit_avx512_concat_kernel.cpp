@@ -44,7 +44,9 @@ void jit_avx512_concat_kernel::compute_one_input() {
     if (jcp.typesize == 4) {
       // load from dst
       vmovups(zmm_src, src_addr);
+      // TODO: use jcp.with_relu
 #ifdef FUSE_CONCAT
+      // TODO: use mask method
       // relu
       // cvt to f32
       vcvtdq2ps(zmm_src, zmm_src);
