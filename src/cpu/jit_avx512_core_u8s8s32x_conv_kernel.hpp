@@ -85,7 +85,7 @@ private:
 #endif
     reg64_t reg_kj   = rax;
     reg64_t reg_ptr_scales = rax;
-    reg64_t reg_oi   = rbx;
+    reg64_t reg_oi   = rbx;  // can not use rbx any more
     reg64_t reg_bias = rdx;
     reg64_t reg_kh   = abi_not_param1;
     reg64_t param    = abi_param1;
@@ -103,11 +103,11 @@ private:
 #ifdef FUSE_CONV
     // for conv 1x1
     reg64_t reg_ptr_acc1x1 = r14;  // use r14 which should always be used in kernel
+    reg64_t reg_ptr_wei1x1 = r12;  // used reg_ptr_sum_scale reg
     reg64_t aux_reg_ptr_acc1x1 = r11;  // this is a tmp_reg for acc1x1 add offset
-    reg64_t aux_reg_ptr_wei1x1 = r12;  // use aux_reg_ker, used only in 3x3 compute_loop
+    reg64_t aux_reg_ptr_wei1x1 = rax;  // use reg_kj, used only in 3x3 compute_loop
 
     reg64_t reg_ptr_bia1x1 = rdx;  // use reg_bias, can use channel reg either i think
-    reg64_t reg_ptr_wei1x1 = r11;  // used reg_ptr_sum_scale reg
     reg64_t reg_ocb3x3 = r15;  // use reg_channel
     reg64_t reg_ptr_scales1x1 = rax;  // use reg_ptr_scales
     reg32_t reg_1x1_src_4u8 = r15d;  // use reg_channel reg
@@ -132,15 +132,18 @@ private:
     }
 #ifdef FUSE_CONV
     // 1x1 acc use 3x3 input. size is ur_w * zmm
-    // range: (0~ur_w, jcp.nb_oc_blocking)
-    #define zmm_1x1out zmm_inp
-    
-    // just change zmm to xmm. should keep the same with zmm_inp
-    xmm_t xmm_1x1out(int i_ic, int nb_x_blocking) {
-        int idx = i_ic + nb_x_blocking * jcp.ur_w;
-        assert(idx < 31);
+    // rage: jcp.nb_oc_blocking * jcp.ur_w + (0 ~ ur_w)
+    zmm_t zmm_1x1out(int jw) {
+        int idx = jw + jcp.nb_oc_blocking * jcp.ur_w;
+        assert(idx < ker_reg_base_idx);
+        return zmm_t(idx);
+    }
+    xmm_t xmm_1x1out(int jw) {
+        int idx = jw + jcp.nb_oc_blocking * jcp.ur_w;
+        assert(idx < ker_reg_base_idx);
         return xmm_t(idx);
     }
+
 #endif
 
     int get_ow_start(int ki, int pad_l) {

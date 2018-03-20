@@ -102,7 +102,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_1x1output(int ur_w)
     je(l_first_load, T_NEAR);
 
     for (int j = 0; j < ur_w; j++) {
-      Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+      Zmm zmm = zmm_1x1out(j);
       int offset = jcp.typesize_acc * j * jcp.oc1x1_block;  // acc1x1 format is (oc1x1/16, ow, 16o)
       vmovups(zmm, EVEX_compress_addr(aux_reg_ptr_acc1x1, offset));
     }
@@ -110,7 +110,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_1x1output(int ur_w)
 
     L(l_first_load);
     for (int j = 0; j < ur_w; j++) {
-      Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+      Zmm zmm = zmm_1x1out(j);
       vpxord(zmm, zmm, zmm);
     }
 
@@ -119,7 +119,6 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::prepare_1x1output(int ur_w)
 
 void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
 {
-  // ocb1x1 is only for bias now
   Label l_update_acc, l_ret;;
   mov(reg_ocb3x3, ptr[param1 + GET_OFF(ocb3x3)]);
   int adjusment = jcp.nb_oc - 1
@@ -140,32 +139,32 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
       int bias_offset = jcp.typesize_bia * ocb1x1* jcp.oc1x1_block;
       auto bias_addr = EVEX_compress_addr(reg_ptr_bia1x1, bias_offset);
       switch (jcp.bia_dt) {
-      case data_type::f32:
-      case data_type::s32: vmovups(zmm_bias, bias_addr); break;
-      case data_type::s8: vpmovsxbd(zmm_bias, bias_addr); break;
-      case data_type::u8: vpmovzxbd(zmm_bias, bias_addr); break;
-      default: assert(!"unsupported dst data type");
+        case data_type::f32:
+        case data_type::s32: vmovups(zmm_bias, bias_addr); break;
+        case data_type::s8: vpmovsxbd(zmm_bias, bias_addr); break;
+        case data_type::u8: vpmovzxbd(zmm_bias, bias_addr); break;
+        default: assert(!"unsupported dst data type");
       }
-      if (jcp.bia_dt != data_type::f32)
-          vcvtdq2ps(zmm_bias, zmm_bias);
+      if (jcp.bia_dt != data_type::f32) {
+        vcvtdq2ps(zmm_bias, zmm_bias);
+      }
   }
 
   vpxord(zmm_zero, zmm_zero, zmm_zero);
   for (int jw = 0; jw < ur_w; jw++) {
-    Zmm zmm = zmm_1x1out(jw, jcp.nb_oc_blocking);
-    Xmm xmm = xmm_1x1out(jw, jcp.nb_oc_blocking);
+    Zmm zmm = zmm_1x1out(jw);
+    // Xmm xmm = xmm_1x1out(jw, jcp.nb_oc_blocking);
     // out format is nhw,c/16,16o
     int offset = jcp.typesize_out * (jw * jcp.oc1x1 + ocb1x1 * jcp.oc1x1_block);
     auto addr = EVEX_compress_addr(reg_ptr_out1x1, offset);
-
-    vcvtdq2ps(zmm, zmm);  // cvt to f32
-    if (jcp.with_bias)
-        vaddps(zmm, zmm, zmm_bias);
+    // cvt to f32
+    vcvtdq2ps(zmm, zmm);
+    if (jcp.with_bias) {
+      vaddps(zmm, zmm, zmm_bias);
+    }
     vmulps(zmm, zmm, EVEX_compress_addr(reg_ptr_scales1x1, scale_offset)); 
-
     // relu
     vmaxps(zmm, zmm_zero, zmm);
-
     if (jcp.dst_dt != data_type::f32) {
       if (attr_.round_mode_ == round_mode::nearest)
           vcvtps2dq(zmm | T_rn_sae, zmm);  // cvt back
@@ -174,7 +173,6 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
       else
           assert(!"unimplemented");
     }
-
     // 1x1 dst always s32
     vmovups(addr, zmm);
   }
@@ -182,7 +180,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::store_1x1output(int ur_w, int ocb1x1)
 
   L(l_update_acc);
   for (int j = 0; j < ur_w; j++) {
-    Zmm zmm = zmm_1x1out(j, jcp.nb_oc_blocking);
+    Zmm zmm = zmm_1x1out(j);
     int offset = jcp.typesize_acc * j * jcp.oc1x1_block;  // acc1x1 format is (oc1x1/16, ow, 16o)
     vmovups(EVEX_compress_addr(aux_reg_ptr_acc1x1, offset), zmm);
   }
@@ -204,7 +202,7 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::compute1x1_loop(int ur_w) {
   // reg sum_scale, scales, bias, channel are avaible now
   mov(reg_ptr_wei1x1, ptr[param1 + GET_OFF(wei1x1)]);  // ic1x1 offsetted
   mov(aux_reg_ptr_acc1x1, reg_ptr_acc1x1); // oh, ow offsetted. 
-  int acc1x1_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
+  int acc1x1_nboc_shift = jcp.typesize_acc * jcp.ow * jcp.oc1x1_block;  // // acc1x1 format is (oc1x1/16, ow, 16o)
   int wei1x1_shift = jcp.typesize_in* 4 * jcp.oc1x1_block;  // == 64*s8
   // compute all oc3x3 for all ur_w
   for (int oc1x1_idx = 0; oc1x1_idx < jcp.nb_oc1x1; ++oc1x1_idx) {
@@ -228,12 +226,12 @@ void jit_avx512_core_u8s8s32x_fwd_kernel::compute1x1_loop(int ur_w) {
             vpextrd(reg_1x1_src_4u8, xmm_out(jw, k), i4);  // get 4u8 from index i4
           }
           vpbroadcastd(zmm_1x1_src_bcast_u8, reg_1x1_src_4u8);
-          compute(zmm_1x1out(jw, jcp.nb_oc_blocking), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
+          compute(zmm_1x1out(jw), zmm_1x1_wei, zmm_1x1_src_bcast_u8);
         }
       }
     }
     store_1x1output(ur_w, oc1x1_idx);  // update acc, or last then relu to dst
-    add(aux_reg_ptr_acc1x1, acc1x1_shift);
+    add(aux_reg_ptr_acc1x1, acc1x1_nboc_shift);
   }
 }
 #endif
