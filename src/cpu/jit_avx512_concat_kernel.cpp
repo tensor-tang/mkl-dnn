@@ -58,16 +58,12 @@ void jit_avx512_concat_kernel::compute_one_input() {
       vmovups(dst_addr, zmm_src);
     } else {
       vmovups(xmm_src, src_addr);
+
 #ifdef FUSE_CONCAT
-      // TODO: xmm => zmm
-      vcvtdq2ps(zmm_src, zmm_src);
-      vmaxps(zmm_src, zmm_zero, zmm_src);
-      vcvtps2dq(zmm_src | T_rn_sae, zmm_src);
-      switch (jcp.dtype) {
-        case data_type::s8: vpmovsdb(xmm_src, zmm_src); break;
-        case data_type::u8: vpmovusdb(xmm_src, zmm_src); break;
-        default: assert(!"error dtype");
-      }
+      Opmask k;
+      vpcmpgtb(k, xmm_src, xmm_zero);     // get mask with greater than zero
+      vpmovm2b(xmm_tmp, k);               // cvt this mask to xmm
+      vandps(xmm_src, xmm_src, xmm_tmp);  // and this xmmwith src
 #endif
       // save to dst
       vmovups(dst_addr, xmm_src);
@@ -89,7 +85,11 @@ void jit_avx512_concat_kernel::generate()
   mov(reg_ptr_nb_ic, ptr[param + GET_OFF(nb_ic)]);
   mov(reg_ptr_dst, ptr[param + GET_OFF(dst)]);
 
-  vpxord(zmm_zero, zmm_zero, zmm_zero);
+  if (jcp.typesize == 4) {
+    vpxord(zmm_zero, zmm_zero, zmm_zero);
+  } else {
+    vpxord(xmm_zero, xmm_zero, xmm_zero);
+  }
 
   xor_(reg_ninputs, reg_ninputs);
   Label l_next_input;
