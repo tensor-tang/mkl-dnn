@@ -719,9 +719,12 @@ void test_concat(bool with_relu = false) {
   int concat_dimension = 1;
   memory::format fmt = memory::format::nhwc;
   // note: src dims always is nchw format, only data layout can be nhwc
+  //std::vector<memory::dims> src_dims = {
+  //  {4, 128, 224, 224},
+  //  {4, 256, 224, 224}};
   std::vector<memory::dims> src_dims = {
-    {4, 128, 224, 224},  // only 64x can run on s8/u8, and 16x on s32
-    {4, 256, 224, 224}};
+    {4, 32, 4, 4},
+    {4, 64, 4, 4}};
 
   // cal dst dims
   int oc = src_dims[0][concat_dimension];
@@ -746,8 +749,16 @@ void test_concat(bool with_relu = false) {
     auto desc = memory::desc(src_dims[i], data_type, fmt);
     auto mpd = memory::primitive_desc(desc, eng);
     auto src_memory = memory(mpd);
-    //const size_t sz = src_memory.get_primitive_desc().get_size() / sizeof(data_t);
-    //fill_data<data_t>(sz, (data_t *)src_memory.get_data_handle());
+
+#ifdef LOAD_SAVE_DATA
+    dtype* srcdata = (dtype*)(src_memory.get_data_handle());
+    std::string filename = "concat_src_";
+    filename += std::to_string(i);
+    filename += ".txt";
+    std::cout << "Load data " << filename << std::endl;
+    auto& dims = src_dims[i];
+    load_nhwc<dtype>(filename.c_str(), srcdata, dims[0], dims[2], dims[3], dims[1]);
+#endif
     srcs_pd.push_back(mpd);
     srcs.push_back(src_memory);
   }
@@ -773,6 +784,13 @@ void test_concat(bool with_relu = false) {
     pp_relu.clear();
     pp_relu.push_back(*fwd_relu);
   }
+#ifdef LOAD_SAVE_DATA
+  stream(stream::kind::eager).submit(pp_concat).wait();
+  dtype* dstdata = (dtype*)(dst.get_data_handle());
+  std::string filename = "concat_dst.txt";
+  std::cout << "Save data " << filename << std::endl;
+  save_nhwc<dtype>(filename.c_str(), dstdata, dst_dims[0], dst_dims[2], dst_dims[3], dst_dims[1]);
+#endif
 
   // cal time
   for (auto i = 0; i < burning_iter; ++i) {
