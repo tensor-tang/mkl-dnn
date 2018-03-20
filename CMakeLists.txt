@@ -53,6 +53,32 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "")
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
+option(ENABLE_JIT_CONCAT "Enable JIT concat function." ON)
+if(ENABLE_JIT_CONCAT)
+    add_definitions(-DENABLE_JIT_CONCAT)
+endif()
+
+option(FUSE_CONCAT "Enable JIT concat fuse ReLU." OFF)
+if(FUSE_CONCAT)
+    add_definitions(-DENABLE_JIT_CONCAT)
+    add_definitions(-DFUSE_CONCAT)
+endif()
+
+option(FUSE_CONV "Enable 3x3 1x1 fuse." OFF)
+if(FUSE_CONV)
+    add_definitions(-DFUSE_CONV)
+endif()
+
+option(LOAD_SAVE_DATA "Enable Load and save data." OFF)
+if(LOAD_SAVE_DATA)
+    add_definitions(-DLOAD_SAVE_DATA)
+endif()
+
+option(ENABLE_VNNI "Enable VNNI Instructions." OFF)
+if(ENABLE_VNNI)
+    add_definitions(-DENABLE_VNNI)
+endif()
+
 include("cmake/platform.cmake")
 include("cmake/OpenMP.cmake")
 include("cmake/SDL.cmake")

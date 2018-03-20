@@ -28,32 +28,6 @@ add_definitions(-DMKLDNN_DLL -DMKLDNN_DLL_EXPORTS)
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
 
-option(ENABLE_VNNI "Enable VNNI Instructions." OFF)
-if(ENABLE_VNNI)
-    add_definitions(-DENABLE_VNNI)
-endif()
-
-option(ENABLE_JIT_CONCAT "Enable JIT concat function." ON)
-if(ENABLE_JIT_CONCAT)
-    add_definitions(-DENABLE_JIT_CONCAT)
-endif()
-
-option(FUSE_CONCAT "Enable JIT concat fuse ReLU." OFF)
-if(FUSE_CONCAT)
-    add_definitions(-DENABLE_JIT_CONCAT)
-    add_definitions(-DFUSE_CONCAT)
-endif()
-
-option(FUSE_CONV "Enable 3x3 1x1 fuse." OFF)
-if(FUSE_CONV)
-    add_definitions(-DFUSE_CONV)
-endif()
-
-option(LOAD_SAVE_DATA "Enable Load and save data." ON)
-if(LOAD_SAVE_DATA)
-    add_definitions(-DLOAD_SAVE_DATA)
-endif()
-
 option(MKLDNN_VERBOSE
     "allows Intel(R) MKL-DNN be verbose whenever MKLDNN_VERBOSE
     environment variable set to 1" ON) # enabled by default
