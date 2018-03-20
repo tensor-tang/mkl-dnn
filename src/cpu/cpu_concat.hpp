@@ -87,7 +87,10 @@ protected:
     virtual status_t init() {
         bool ok = true
             && set_default_params() == success
-            && attr()->has_default_values();
+#ifndef ENABLE_JIT_CONCAT
+            && attr()->has_default_values()
+#endif
+            ;
         if (!ok) return unimplemented;
 
         const int ndims = dst_pd_.desc()->ndims;

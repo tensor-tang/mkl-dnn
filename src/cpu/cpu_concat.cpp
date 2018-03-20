@@ -40,6 +40,10 @@ static const cpd_create_f cpu_concat_impl_list[] = {
     INSTANCE(jit_concat_t<data_type::u8>),
     INSTANCE(jit_concat_t<data_type::s8>),
     INSTANCE(jit_concat_t<data_type::s32>),
+    INSTANCE(jit_concat_relu_t<data_type::f32>),
+    INSTANCE(jit_concat_relu_t<data_type::u8>),
+    INSTANCE(jit_concat_relu_t<data_type::s8>),
+    INSTANCE(jit_concat_relu_t<data_type::s32>),
 #endif
     INSTANCE(nhwc_concat_t<data_type::f32>),
     INSTANCE(nhwc_concat_t<data_type::u8>),

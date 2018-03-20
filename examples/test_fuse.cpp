@@ -712,6 +712,7 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
 template <typename dtype>  // should be one of s32, s8, u8
 void test_concat(bool with_relu = false) {
   std::unique_ptr<primitive> fwd_concat, fwd_relu;
+  std::unique_ptr<concat::primitive_desc> concat_pd;
   std::unique_ptr<eltwise_forward::primitive_desc> relu_pd;
   std::vector<primitive> pp_concat, pp_relu;  // pipeline
 
@@ -765,18 +766,31 @@ void test_concat(bool with_relu = false) {
 
   // dst memory
   auto dst_desc = memory::desc(dst_dims, data_type, fmt);
-  auto concat_pd = concat::primitive_desc(dst_desc, concat_dimension, srcs_pd);
-  auto dst = memory(concat_pd.dst_primitive_desc());
+#ifdef ENABLE_JIT_CONCAT
+  if (with_relu) {
+    primitive_attr attr = mkldnn::primitive_attr();
+    post_ops ops;
+    ops.append_eltwise(1.0f, algorithm::eltwise_relu, 0.f, 0.f);
+    attr.set_post_ops(ops);
+    concat_pd.reset(new concat::primitive_desc(dst_desc, concat_dimension, srcs_pd, attr));
+  } else {
+    concat_pd.reset(new concat::primitive_desc(dst_desc, concat_dimension, srcs_pd));
+  }
+#else
+  concat_pd.reset(new concat::primitive_desc(dst_desc, concat_dimension, srcs_pd));
+#endif
+  auto dst = memory(concat_pd->dst_primitive_desc());
 
   // concat
   std::vector<primitive::at> inputs;
   for (size_t i = 0; i < srcs.size(); i++) {
       inputs.push_back(srcs[i]);
   }
-  fwd_concat.reset(new concat(concat_pd, inputs, dst));
+  fwd_concat.reset(new concat(*concat_pd, inputs, dst));
   pp_concat.clear();
   pp_concat.push_back(*fwd_concat);
 
+#ifndef ENABLE_JIT_CONCAT
   if (with_relu) {
     // add relu
     relu_pd = get_relu_pd(dst_desc);
@@ -784,6 +798,8 @@ void test_concat(bool with_relu = false) {
     pp_relu.clear();
     pp_relu.push_back(*fwd_relu);
   }
+#endif
+
 #ifdef LOAD_SAVE_DATA
   stream(stream::kind::eager).submit(pp_concat).wait();
   dtype* dstdata = (dtype*)(dst.get_data_handle());
@@ -795,9 +811,11 @@ void test_concat(bool with_relu = false) {
   // cal time
   for (auto i = 0; i < burning_iter; ++i) {
     stream(stream::kind::eager).submit(pp_concat).wait();
+#ifndef ENABLE_JIT_CONCAT
     if (with_relu) {
       stream(stream::kind::eager).submit(pp_relu).wait();
     }
+#endif
   }
 
   auto get_current_ms = []() -> double {
@@ -814,11 +832,13 @@ void test_concat(bool with_relu = false) {
     stream(stream::kind::eager).submit(pp_concat).wait();
     auto s2 = get_current_ms();
     sum_concat += (s2 - s1);
+#ifndef ENABLE_JIT_CONCAT
     if (with_relu) {
       stream(stream::kind::eager).submit(pp_relu).wait();
       auto s3 = get_current_ms();
       sum_relu += (s3 - s2);
     }
+#endif
   }
   auto t_stop = get_current_ms();
 
@@ -831,13 +851,23 @@ void test_concat(bool with_relu = false) {
 
 
   std::cout << "Concat";
+#ifdef ENABLE_JIT_CONCAT
+  if (with_relu) {
+    std::cout << "_ReLU";
+  }
+#else
   if (with_relu) {
     std::cout << " + ReLU";
   }
+#endif
   std::cout << " avg time (" << sum_concat / (double)iter;
+
+#ifndef ENABLE_JIT_CONCAT
   if (with_relu) {
     std::cout << " + " << sum_relu / (double)iter;
   }
+#endif
+
   std::cout << "): " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
 }
 
@@ -922,6 +952,9 @@ int main(int argc, char **argv) {
       "1x1+relu",
       "reorder",
       "concat",
+#ifdef ENABLE_JIT_CONCAT
+      "concat_relu",
+#endif
       "concat+relu",
       "test_load_data"
       ));
@@ -999,6 +1032,14 @@ int main(int argc, char **argv) {
       if (func_option.compare(func_option.length() - 4, 4, "relu") == 0) {
         with_relu = true;
       }
+#ifdef ENABLE_JIT_CONCAT
+      if (with_relu) {
+        if (func_option != "concat_relu") {
+          std::cout << "JIT concat is enabled, relu will always be fused to concat_relu" << std::endl;
+          return 0;
+        }
+      }
+#endif
       if (concat_dtype == "s32") {
         test_concat<s32>(with_relu);
       } else if (concat_dtype == "s8") {

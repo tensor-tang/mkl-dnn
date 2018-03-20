@@ -27,8 +27,8 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-template <data_type_t data_type>
-struct jit_concat_t: public cpu_primitive_t {
+template <bool with_relu, data_type_t data_type>
+struct _jit_concat_t: public cpu_primitive_t {
   using cpu_memory_pd_t = cpu_memory_t::pd_t;
   typedef typename prec_traits<data_type>::type data_t;
 
@@ -39,7 +39,7 @@ struct jit_concat_t: public cpu_primitive_t {
           , jcp_({})
       {}
 
-      DECLARE_CPU_CONCAT_PD_T("jit:any", jit_concat_t);
+      DECLARE_CPU_CONCAT_PD_T("jit:any", _jit_concat_t);
 
       virtual status_t init() override {
           using namespace mkldnn::impl::memory_format;
@@ -62,13 +62,13 @@ struct jit_concat_t: public cpu_primitive_t {
 
           return jit_avx512_concat_kernel::init_conf(
                   jcp_, this->src_pds_, this->dst_pd_, *this->attr(),
-                  false /*with _relu*/,
+                  with_relu /*with _relu*/,
                   0. /*negative_slope*/);
       }
       jit_concat_conf_t jcp_;
   };
 
-  jit_concat_t(const pd_t *conf, const input_vector &inputs,
+  _jit_concat_t(const pd_t *conf, const input_vector &inputs,
           const output_vector &outputs)
       : cpu_primitive_t(&conf_, inputs, outputs), conf_(*conf) {
 
@@ -89,7 +89,7 @@ struct jit_concat_t: public cpu_primitive_t {
         src_with_offset_ = (const data_t **)malloc(nthreads*num_srcs*sizeof(data_t *), 64);
       }
 
-  ~jit_concat_t() {
+  ~_jit_concat_t() {
       free(src_);
       free(src_with_offset_);
       free(ic_);
@@ -112,6 +112,12 @@ private:
   int *ic_;
   int *nb_ic_;
 };
+
+template <impl::data_type_t data_type>
+using jit_concat_t = _jit_concat_t<false, data_type>;
+
+template <impl::data_type_t data_type>
+using jit_concat_relu_t = _jit_concat_t<true, data_type>;
 
 }
 }

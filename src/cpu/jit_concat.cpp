@@ -29,8 +29,8 @@ namespace cpu {
 using namespace mkldnn::impl::utils;
 
 
-template <data_type_t data_type>
-void jit_concat_t<data_type>::execute_forward() {
+template <bool with_relu, data_type_t data_type>
+void _jit_concat_t<with_relu, data_type>::execute_forward() {
   const auto &jcp = kernel_->jcp;
   // update srcs data
   for (int i = 0; i < jcp.n_inputs; ++i) {
@@ -85,10 +85,15 @@ void jit_concat_t<data_type>::execute_forward() {
   }
 }
 
-template struct jit_concat_t<data_type::f32>;
-template struct jit_concat_t<data_type::u8>;
-template struct jit_concat_t<data_type::s8>;
-template struct jit_concat_t<data_type::s32>;
+template struct _jit_concat_t<false, data_type::f32>;
+template struct _jit_concat_t<false, data_type::u8>;
+template struct _jit_concat_t<false, data_type::s8>;
+template struct _jit_concat_t<false, data_type::s32>;
+
+template struct _jit_concat_t<true, data_type::f32>;
+template struct _jit_concat_t<true, data_type::u8>;
+template struct _jit_concat_t<true, data_type::s8>;
+template struct _jit_concat_t<true, data_type::s32>;
 
 }
 }

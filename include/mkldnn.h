@@ -496,6 +496,14 @@ mkldnn_status_t MKLDNN_API mkldnn_concat_primitive_desc_create(
         const mkldnn_memory_desc_t *output_desc, int n, int concat_dimension,
         const_mkldnn_primitive_desc_t *input_pds);
 
+#ifdef ENABLE_JIT_CONCAT
+mkldnn_status_t MKLDNN_API mkldnn_concat_primitive_desc_create_v2(
+        mkldnn_primitive_desc_t *concat_primitive_desc,
+        const mkldnn_memory_desc_t *output_desc, int n, int concat_dimension,
+        const_mkldnn_primitive_desc_t *input_pds,
+        const_mkldnn_primitive_attr_t attr);
+#endif
+
 #if 0
 /** Creates in-place @p concat_primitive_desc for given @p n @p inputs memory
  * primitive descriptors along @p concat_dimension. All inputs must have the

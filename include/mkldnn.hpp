@@ -911,7 +911,20 @@ struct concat : public primitive {
                 "could not create a concat primitive descriptor");
             reset(result);
         }
+#ifdef ENABLE_JIT_CONCAT
+        primitive_desc(const memory::desc &output, int concat_dimension,
+                std::vector<memory::primitive_desc> inputs, const primitive_attr &aattr) {
+            mkldnn_primitive_desc_t result;
 
+            auto c_api_inputs = cpp_to_c(inputs);
+
+            error::wrap_c_api(mkldnn_concat_primitive_desc_create_v2(
+                    &result, &output.data, (int)c_api_inputs.size(),
+                    concat_dimension, &c_api_inputs[0], aattr.get()),
+                "could not create a concat primitive descriptor");
+            reset(result);
+        }
+#endif
         primitive_desc(int concat_dimension,
                 std::vector<memory::primitive_desc> inputs) {
             mkldnn_primitive_desc_t result;

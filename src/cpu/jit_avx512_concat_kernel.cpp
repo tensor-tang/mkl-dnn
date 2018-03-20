@@ -44,23 +44,20 @@ void jit_avx512_concat_kernel::compute_one_input() {
     if (jcp.typesize == 4) {
       // load from dst
       vmovups(zmm_src, src_addr);
-      // TODO: use jcp.with_relu
-#ifdef FUSE_CONCAT
-      // relu
-      switch (jcp.dtype) {
-        case data_type::s32: vpmaxsw(zmm_src, zmm_src, zmm_zero); break;
-        case data_type::f32: vmaxps(zmm_src, zmm_zero, zmm_src); break;
-        default: assert(!"error dtype");
+      if (jcp.with_relu) {  // relu
+        switch (jcp.dtype) {
+          case data_type::s32: vpmaxsw(zmm_src, zmm_src, zmm_zero); break;
+          case data_type::f32: vmaxps(zmm_src, zmm_zero, zmm_src); break;
+          default: assert(!"error dtype");
+        }
       }
-#endif
       // save to dst
       vmovups(dst_addr, zmm_src);
     } else {
       vmovups(xmm_src, src_addr);
-
-#ifdef FUSE_CONCAT
-      vpmaxsb(xmm_src, xmm_src, xmm_zero);
-#endif
+      if (jcp.with_relu) {
+        vpmaxsb(xmm_src, xmm_src, xmm_zero);
+      }
       // save to dst
       vmovups(dst_addr, xmm_src);
     }
@@ -115,7 +112,7 @@ bool jit_avx512_concat_kernel::post_ops_ok(
 
   switch (p.len_) {
     case 0: return true;
-    case 1: return true && jcp.with_relu;
+    case 1: return true && jcp.with_relu == true && is_relu(0);
     default: return false;
   }
 
