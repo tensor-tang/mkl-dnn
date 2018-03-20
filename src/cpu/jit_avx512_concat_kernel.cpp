@@ -46,15 +46,12 @@ void jit_avx512_concat_kernel::compute_one_input() {
       vmovups(zmm_src, src_addr);
       // TODO: use jcp.with_relu
 #ifdef FUSE_CONCAT
-      // TODO: use mask method
       // relu
-      // cvt to f32
-      vcvtdq2ps(zmm_src, zmm_src);
-      vmaxps(zmm_src, zmm_zero, zmm_src);
-      // cvt back:
-      // round_mode::nearest: T_rn_sae
-      // round_mode::down: T_rd_sae
-      vcvtps2dq(zmm_src | T_rn_sae, zmm_src);  
+      switch (jcp.dtype) {
+        case data_type::s32: vpmaxsw(zmm_src, zmm_src, zmm_zero); break;
+        case data_type::f32: vmaxps(zmm_src, zmm_zero, zmm_src); break;
+        default: assert(!"error dtype");
+      }
 #endif
       // save to dst
       vmovups(dst_addr, zmm_src);
@@ -62,10 +59,7 @@ void jit_avx512_concat_kernel::compute_one_input() {
       vmovups(xmm_src, src_addr);
 
 #ifdef FUSE_CONCAT
-      Opmask k;
-      vpcmpgtb(k, xmm_src, xmm_zero);     // get mask with greater than zero
-      vpmovm2b(xmm_tmp, k);               // cvt this mask to xmm
-      vandps(xmm_src, xmm_src, xmm_tmp);  // and this xmmwith src
+      vpmaxsb(xmm_src, xmm_src, xmm_zero);
 #endif
       // save to dst
       vmovups(dst_addr, xmm_src);
