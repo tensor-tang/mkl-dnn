@@ -23,10 +23,22 @@
 #include <stdint.h>
 #include <assert.h>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#else
+inline int omp_get_max_threads() { return 1; }
+inline int omp_get_num_threads() { return 1; }
+inline int omp_get_thread_num() { return 0; }
+inline int omp_in_parallel() { return 0; }
+#endif
+
+#define COLD_CACHE 1
+
+
 using namespace mkldnn;
 
-static int burning_iter = 20;
-static int iter = 10;
+static int burning_iter = 50;
+static int iter = 100;
 static mkldnn::engine eng = mkldnn::engine(engine::cpu, 0);
 
 void test_reorder() {
@@ -383,6 +395,15 @@ std::unique_ptr<eltwise_forward::primitive_desc> get_relu_pd(const memory::desc 
   return std::unique_ptr<eltwise_forward::primitive_desc>(
       new eltwise_forward::primitive_desc(relu_desc, eng));
 }
+void clear_cache(u8* p, size_t n) {
+#pragma omp parallel for
+  for (size_t i = 0; i < n; ++i) {
+    u8 write = 3*i, read = 4*i;  // give a little cal
+    *(p+i) = read;
+    read = p[i];
+    *(p+i) = write;
+  }
+}
 
 void test_conv(const std::string& type, test_convolution_sizes_t* cds,
   const int id, bool with_relu, bool fuse_relu = true, bool with_bias = true) {
@@ -476,9 +497,21 @@ void test_conv(const std::string& type, test_convolution_sizes_t* cds,
   std::cout << "Save data " << filename << std::endl;
   save_nhwc<s32>(filename.c_str(), pdst, cd.mb, cd.oh, cd.ow, cd.oc);
 #endif
+  const size_t PAGE_4M = 4 * 1024 *1024;   // skx, L3: 1.375M*n
+  int max_nthr = omp_get_max_threads();
+  std::cout <<"max threads: " << max_nthr << std::endl;
+  const size_t total_size = PAGE_4M * max_nthr;
+  u8* dummy_data = (u8*) malloc(total_size);
 
   for (auto i = 0; i < burning_iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
     stream(stream::kind::eager).submit(pipeline).wait();
+#ifdef  COLD_CACHE
+      clear_cache(dummy_data, total_size);
+#endif
+
   }
 
   auto get_current_ms = []() -> double {
@@ -487,9 +520,20 @@ void test_conv(const std::string& type, test_convolution_sizes_t* cds,
     return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
   };
 
+  double sum0 = 0;
   auto t_start = get_current_ms();
   for (auto i = 0; i < iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
+    auto s1 = get_current_ms();
     stream(stream::kind::eager).submit(pipeline).wait();
+    auto s2 = get_current_ms();
+    sum0 += (s2 -s1);
+#ifdef  COLD_CACHE
+      clear_cache(dummy_data, total_size);
+#endif
+
   }
   auto t_stop = get_current_ms();
 
@@ -514,7 +558,7 @@ void test_conv(const std::string& type, test_convolution_sizes_t* cds,
   std::cout << " without VNNI ";
 #endif
 
-  std::cout << "avg time: " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+  std::cout << "avg time: " << sum0 / (double) iter << " ms" << std::endl;
 }
 
 // test conv3x3_relu + conv1x1_relu
@@ -648,10 +692,21 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
   std::cout << "Save data " << filename << std::endl;
   save_nhwc<s32>(filename.c_str(), pdst1x1, cd.mb, cd.oh, cd.ow, cd.oc);
 #endif
+  const size_t PAGE_4M = 4 * 1024 *1024;   // skx, L3: 1.375M*n
+  int max_nthr = omp_get_max_threads();
+  std::cout <<"max threads: " << max_nthr << std::endl;
+  const size_t total_size = PAGE_4M * max_nthr;
+  u8* dummy_data = (u8*) malloc(total_size);
 
   for (auto i = 0; i < burning_iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
     stream(stream::kind::eager).submit(pp3x3).wait();
     stream(stream::kind::eager).submit(pp1x1).wait();
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
   }
 
   auto get_current_ms = []() -> double {
@@ -665,11 +720,17 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
   double sum1x1 = 0;
   
   for (auto i = 0; i < iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
     auto s1 = get_current_ms();
     stream(stream::kind::eager).submit(pp3x3).wait();
     auto s2 = get_current_ms();
     stream(stream::kind::eager).submit(pp1x1).wait();
     auto s3 = get_current_ms();
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
     sum3x3 += (s2 - s1);
     sum1x1 += (s3 - s2);
   }
@@ -699,14 +760,14 @@ void test_conv3x3_1x1(test_convolution_sizes_t* cds, const int id,
     std::cout << " without bias";
   }
     
-#ifdef ENABLE_VNNI
-  std::cout << " with VNNI ";
-#else
-  std::cout << " without VNNI ";
-#endif
-  std::cout << "avg time ("
-  << sum3x3 / (double)iter << " + " << sum1x1 / (double)iter << "): "
-  << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+    double avg3x3 = sum3x3 / (double)iter;
+    double avg1x1 = sum1x1 / (double)iter;
+    std::cout << "avg time ("
+    << avg3x3 << " + " << avg1x1 << "): "
+    << avg3x3 + avg1x1 << " ms" << std::endl;
+    
+    free(dummy_data);
+
 }
 
 template <typename dtype>  // should be one of s32, s8, u8
@@ -720,12 +781,12 @@ void test_concat(bool with_relu = false) {
   int concat_dimension = 1;
   memory::format fmt = memory::format::nhwc;
   // note: src dims always is nchw format, only data layout can be nhwc
-  //std::vector<memory::dims> src_dims = {
-  //  {4, 128, 224, 224},
-  //  {4, 256, 224, 224}};
   std::vector<memory::dims> src_dims = {
-    {4, 32, 4, 4},
-    {4, 64, 4, 4}};
+  {4, 128, 224, 224},
+  {4, 256, 224, 224}};
+  //std::vector<memory::dims> src_dims = {
+  //  {4, 32, 4, 4},
+  //  {4, 64, 4, 4}};
 
   // cal dst dims
   int oc = src_dims[0][concat_dimension];
@@ -809,13 +870,26 @@ void test_concat(bool with_relu = false) {
 #endif
 
   // cal time
+  const size_t PAGE_4M = 4 * 1024 *1024;   // skx, L3: 1.375M*n
+  int max_nthr = omp_get_max_threads();
+  std::cout <<"max threads: " << max_nthr << std::endl;
+  const size_t total_size = PAGE_4M * max_nthr;
+  u8* dummy_data = (u8*) malloc(total_size);
   for (auto i = 0; i < burning_iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
+
     stream(stream::kind::eager).submit(pp_concat).wait();
 #ifndef ENABLE_JIT_CONCAT
     if (with_relu) {
       stream(stream::kind::eager).submit(pp_relu).wait();
     }
 #endif
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
+
   }
 
   auto get_current_ms = []() -> double {
@@ -828,6 +902,9 @@ void test_concat(bool with_relu = false) {
   double sum_relu = 0;
   auto t_start = get_current_ms();
   for (auto i = 0; i < iter; ++i) {
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
+#endif
     auto s1 = get_current_ms();
     stream(stream::kind::eager).submit(pp_concat).wait();
     auto s2 = get_current_ms();
@@ -838,6 +915,9 @@ void test_concat(bool with_relu = false) {
       auto s3 = get_current_ms();
       sum_relu += (s3 - s2);
     }
+#endif
+#ifdef  COLD_CACHE
+    clear_cache(dummy_data, total_size);
 #endif
   }
   auto t_stop = get_current_ms();
@@ -868,7 +948,8 @@ void test_concat(bool with_relu = false) {
   }
 #endif
 
-  std::cout << "): " << (t_stop - t_start) / (double) iter << " ms" << std::endl;
+  std::cout << ") ms" << std::endl;
+  free(dummy_data);
 }
 
 static void usage() {
